@@ -25,6 +25,7 @@ from .paths import (
     P_TRAVEL_STATUS,
     P_TRIP_TOTAL,
 )
+from .ts_layers import P_ALWAYS_FRESH
 
 log = logging.getLogger(__name__)
 
@@ -92,9 +93,12 @@ class VehicleState:
             travel_num = None
         self.driving = (travel_num not in (None, 0.0)) or self.speed_kmh > 5
 
-        # ts 新鲜度：拿本轮最大车端 ts 与上一轮比（停更→休眠线索）
+        # ts 新鲜度（观察期发现修正）：只看「持续上报型」路径（5G/Trip.Total）
+        # —— 变化才上报型（ChargeStatus/Location）静止时 ts 停更是正常现象
         max_ts = 0
-        for dp in merged.values():
+        for path, dp in merged.items():
+            if path not in P_ALWAYS_FRESH:
+                continue
             t = dp.get("ts")
             if isinstance(t, (int, float)) and t > max_ts:
                 max_ts = int(t)

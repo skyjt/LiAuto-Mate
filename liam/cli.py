@@ -69,15 +69,31 @@ async def _serve() -> int:
     import uvicorn
     from contextlib import asynccontextmanager
 
-    settings, _db, _api, _store, keeper = _build_stack(vin="")
+    settings, _db, api, _store, keeper = _build_stack(vin="")
     from .web.app import create_app
     keeper_ref: dict = {"keeper": None}
+    collector_task: list = []
 
     @asynccontextmanager
     async def lifespan(_app):
         await keeper.start()
         keeper_ref["keeper"] = keeper
+        # 采集器：会话 OK 才启动（NEED_LOGIN 则等重登后手动/自动拉起）
+        vin = _db.query_one("SELECT value FROM meta WHERE key='vin'")
+        if vin and keeper.state != "need_login":
+            from .collector.collector import Collector
+            col = Collector(api, keeper, _db, settings, vin["value"])
+            collector_task.append(asyncio.create_task(
+                col.run_forever(), name="collector"))
+            log_info = f"collector started vin={vin['value']}"
+            logging.getLogger(__name__).info(log_info)
+        else:
+            logging.getLogger(__name__).warning(
+                "collector 未启动（vin=%s state=%s）",
+                vin["value"] if vin else "未配置", keeper.state)
         yield
+        for t in collector_task:
+            t.cancel()
         await keeper.stop()
 
     app = create_app(settings, keeper_ref, lifespan)
