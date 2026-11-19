@@ -45,7 +45,41 @@ CREATE TABLE IF NOT EXISTS collector_log (
 CREATE INDEX IF NOT EXISTS idx_collector_ts ON collector_log(ts_ms);
 """
 
-USER_VERSION = 1
+# M1 增补：状态表（方案 §7）
+_SCHEMA_M1 = """
+CREATE TABLE IF NOT EXISTS state_latest (
+    vin TEXT NOT NULL,
+    path TEXT NOT NULL,
+    value_json TEXT NOT NULL,        -- 原始值（数字/字符串/JSON 字符串）JSON 编码
+    ts_ms INTEGER,                    -- 车端 ts（VSS ms）
+    source TEXT,
+    ingested_at_ms INTEGER NOT NULL, -- 本地采集时间
+    PRIMARY KEY (vin, path)
+);
+
+CREATE TABLE IF NOT EXISTS state_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vin TEXT NOT NULL,
+    path TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    ts_ms INTEGER,
+    source TEXT,
+    ingested_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hist_path_ts ON state_history(vin, path, ingested_at_ms);
+
+-- 车辆状态时间线（TeslaMate states 同构，方案 §8.4 取经）
+CREATE TABLE IF NOT EXISTS states (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vin TEXT NOT NULL,
+    state TEXT NOT NULL,             -- driving/charging/parked_awake/asleep/offline
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER                   -- NULL = 当前进行中
+);
+CREATE INDEX IF NOT EXISTS idx_states_time ON states(vin, start_ms);
+"""
+
+USER_VERSION = 2
 
 
 class Database:
@@ -62,14 +96,31 @@ class Database:
     def _migrate(self) -> None:
         with self._lock, self._conn:
             cur = self._conn.execute("PRAGMA user_version")
-            if cur.fetchone()[0] < USER_VERSION:
+            v = cur.fetchone()[0]
+            if v < 1:
                 self._conn.executescript(_SCHEMA_M0)
+            if v < 2:
+                self._conn.executescript(_SCHEMA_M1)
+            if v < USER_VERSION:
                 self._conn.execute(f"PRAGMA user_version = {USER_VERSION}")
 
     # --- 通用小助手（M0 阶段保持薄；M1 起按表封装 repository）---
     def execute(self, sql: str, params: tuple = ()) -> None:
         with self._lock, self._conn:
             self._conn.execute(sql, params)
+
+    def executemany(self, sql: str, rows: list[tuple]) -> None:
+        """多行写入（单事务）：latest upsert + history insert 原子落库。"""
+        with self._lock, self._conn:
+            self._conn.executemany(sql, rows)
+
+    def transaction(self):
+        """事务上下文：with db.transaction(): db.executemany(...)。
+
+        RLock 可重入 + 嵌套 with 均指向同一 BEGIN...COMMIT —— 单写者模型
+        下等价原子块（第二个 with 块不会重开事务）。
+        """
+        return _Txn(self)
 
     def query_one(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
         with self._lock:
@@ -82,3 +133,26 @@ class Database:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+
+class _Txn:
+    """with db.transaction() 上下文（见 Database.transaction 注释）。"""
+
+    __slots__ = ("_db",)
+
+    def __init__(self, db: "Database") -> None:
+        self._db = db
+
+    def __enter__(self) -> "Database":
+        self._db._lock.acquire()
+        self._db._conn.execute("BEGIN")
+        return self._db
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        try:
+            if exc_type is None:
+                self._db._conn.commit()
+            else:
+                self._db._conn.rollback()
+        finally:
+            self._db._lock.release()

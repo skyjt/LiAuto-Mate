@@ -26,6 +26,11 @@ def main() -> int:
         "smoke-m0", help="M0 验收：真实链路（refresh→scope→vss 批读）——显式手动运行")
     p_smoke.add_argument("--vin", required=True)
     p_smoke.add_argument("--paths", default="5")
+    p_obs = sub.add_parser(
+        "observe", help="M1 观察期：60s 固定直采全量路径入库（48h，打真实 API，手动运行）")
+    p_obs.add_argument("--vin", required=True)
+    p_obs.add_argument("--once", action="store_true", help="只采一轮（验证用）")
+    p_obs.add_argument("--interval", type=int, default=60)
     p_import = sub.add_parser("import-session", help="导入 spike session.json")
     p_import.add_argument("file", type=Path)
     p_import.add_argument("--vin", required=True)
@@ -35,6 +40,8 @@ def main() -> int:
         return asyncio.run(_serve())
     if args.cmd == "smoke-m0":
         return asyncio.run(_smoke_m0(args.vin, int(args.paths)))
+    if args.cmd == "observe":
+        return asyncio.run(_observe(args.vin, args.once, args.interval))
     if args.cmd == "import-session":
         return _import_session(args.file, args.vin)
     return 2
@@ -120,6 +127,36 @@ async def _smoke_m0(vin: str, n_paths: int) -> int:
             return 1
         print(f"[5] 会话状态: {keeper.status()}")
         print("\n[✓] M0 smoke 全链路通过：恢复→刷新→换票→签名批读。")
+        return 0
+    finally:
+        await api.aclose()
+
+
+async def _observe(vin: str, once: bool, interval: int) -> int:
+    """M1 观察期入口：真实 API 60s 直采（手动运行，绝不进 CI）。"""
+    from .collector.observe import OBSERVE_INTERVAL, ObserveCollector
+    if interval != OBSERVE_INTERVAL:
+        import liam.collector.observe as obs_mod
+        obs_mod.OBSERVE_INTERVAL = interval
+    settings, db, api, store, keeper = _build_stack(vin)
+    col = ObserveCollector(api, keeper, db, vin)
+    try:
+        if not store.restore_into(api):
+            print("!! 无凭据（先 import-session）")
+            return 1
+        await api.refresh_bearer()
+        store.persist_all(api)
+        if once:
+            summary = await col.poll_once()
+            print(f"[observe-once] {summary}")
+            row = db.query_one("SELECT COUNT(*) c FROM state_latest")
+            print(f"    state_latest 共 {row['c']} 行")
+            return 0
+        print(f"[observe] 启动 48h 观察期（interval={interval}s）Ctrl-C 结束")
+        await col.run_forever()
+        return 0
+    except KeyboardInterrupt:
+        print("\n[observe] 手动停止")
         return 0
     finally:
         await api.aclose()
