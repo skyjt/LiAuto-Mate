@@ -141,7 +141,29 @@ CREATE TABLE IF NOT EXISTS geofences (
 );
 """
 
-USER_VERSION = 3
+# M3 增补：云端历史镜像（幂等 upsert，方案 §4.2）
+_SCHEMA_M3 = """
+CREATE TABLE IF NOT EXISTS travel_daily (
+    vin TEXT NOT NULL,
+    date TEXT NOT NULL,               -- YYYY-MM-DD（云端自然日）
+    mileage_km REAL,
+    energy_kwh REAL,
+    raw_json TEXT,
+    PRIMARY KEY (vin, date)
+);
+
+CREATE TABLE IF NOT EXISTS charge_records_cloud (
+    vin TEXT NOT NULL,
+    record_id TEXT PRIMARY KEY,       -- 云端记录 ID（幂等键）
+    start_ms INTEGER, end_ms INTEGER,
+    energy_kwh REAL, charging_type INTEGER,
+    raw_json TEXT,
+    synced_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_crc_time ON charge_records_cloud(vin, start_ms);
+"""
+
+USER_VERSION = 4
 
 
 class Database:
@@ -165,6 +187,8 @@ class Database:
                 self._conn.executescript(_SCHEMA_M1)
             if v < 3:
                 self._conn.executescript(_SCHEMA_M2)
+            if v < 4:
+                self._conn.executescript(_SCHEMA_M3)
             if v < USER_VERSION:
                 self._conn.execute(f"PRAGMA user_version = {USER_VERSION}")
 

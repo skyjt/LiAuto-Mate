@@ -24,8 +24,13 @@ from .constants import (
     API_APP,
     API_ID,
     AUD_VSS,
-    EP_AUTH,
+    EP_CHARGE_RECORDS,
     EP_TOKEN,
+    EP_TRAVEL_ALL,
+    EP_TRAVEL_DAILY,
+    EP_TRAVEL_MONTHLY,
+    EP_TRAVEL_MONTHS,
+    EP_AUTH,
     EP_VSS_GET_BATCH,
     LIVIS_CLIENT_ID,
     SCOPE_VSS,
@@ -68,12 +73,14 @@ class LiApi:
         bearer: str = "",
         cookies: dict[str, str] | None = None,
         device_id: str = "",
+        vin: str = "",
         timeout: float = 20.0,
     ) -> None:
         self.refresh_token = refresh_token
         self.bearer = bearer
         self.cookies: dict[str, str] = dict(cookies or {})
         self.device_id = device_id or uuid.uuid4().hex
+        self.vin = vin
         self._client = httpx.AsyncClient(timeout=timeout)
         # 签名身份（hac_hex, key_id）—— 首次签名调用前派生并缓存
         self._hac_hex = ""
@@ -219,3 +226,66 @@ class LiApi:
             dp = it.get("dp") or {}
             out[it.get("path", "")] = dp
         return out
+
+    # ------------------------------------------------------------------
+    # 业务：云端历史（travel / chargeRecords —— 主 Bearer 通道，方案 §4.2）
+    # ------------------------------------------------------------------
+
+    async def _signed_get_travel(self, path: str) -> Any:
+        """travel/chargeRecords 族：签名 GET（主 Bearer 通道，方案 §4.2）。
+
+        ★ 实测（11-19）：travel 网关对 GET 也要求 Content-MD5（空 body 的
+        MD5）——缺头返回 100002「缺少必要的请求参数: Content-MD5」。
+        100105（主 Bearer 过期）→ 刷新重试一次（ha-lixiang 配方）。
+        """
+        hac_hex, key_id = await self._ensure_identity()
+        headers = sign_headers(
+            hac_hex, key_id, self.device_id, self.bearer,
+            method="GET", accept="*/*", content_type="",
+            body="", vin=self.vin)
+        # 保留空 body Content-MD5（勿删——travel 网关必需）
+        headers["Authorization"] = f"Bearer {self.bearer}"
+        resp = await self._client.get(
+            API_APP + path, headers=headers)
+        data: dict = {}
+        try:
+            data = resp.json()
+        except ValueError:
+            pass
+        if data.get("code") == 100105:
+            # 主 Bearer 过期 → 刷新一次重试
+            await self.refresh_bearer()
+            headers["Authorization"] = f"Bearer {self.bearer}"
+            headers["X-CHJ-TOKEN"] = self.bearer
+            resp = await self._client.get(API_APP + path, headers=headers)
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+        if resp.status_code != 200 or data.get("code") not in (None, 0):
+            raise LiApiError(
+                f"travel HTTP {resp.status_code} code={data.get('code')} "
+                f"{str(data.get('msg') or data.get('message'))[:100]}")
+        return data.get("data")
+
+    # --- 具体端点（ha-lixiang 已验证的 4 个 travel + chargeRecords）---
+
+    async def get_travel_months(self) -> Any:
+        return await self._signed_get_travel(
+            EP_TRAVEL_MONTHS.format(vin=self.vin))
+
+    async def get_travel_monthly(self, year: int, month: int) -> Any:
+        return await self._signed_get_travel(
+            EP_TRAVEL_MONTHLY.format(vin=self.vin, year=year, month=month))
+
+    async def get_travel_daily(self, start_date: str, end_date: str) -> Any:
+        return await self._signed_get_travel(
+            f"{EP_TRAVEL_DAILY.format(vin=self.vin)}"
+            f"?startDate={start_date}&endDate={end_date}")
+
+    async def get_travel_all(self) -> Any:
+        return await self._signed_get_travel(EP_TRAVEL_ALL.format(vin=self.vin))
+
+    async def get_charge_records(self, page: int = 1, page_size: int = 50) -> Any:
+        return await self._signed_get_travel(
+            f"{EP_CHARGE_RECORDS}?vin={self.vin}&page={page}&pageSize={page_size}")
