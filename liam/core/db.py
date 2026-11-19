@@ -79,7 +79,69 @@ CREATE TABLE IF NOT EXISTS states (
 CREATE INDEX IF NOT EXISTS idx_states_time ON states(vin, start_ms);
 """
 
-USER_VERSION = 2
+# M2 增补：会话三件套 + geofences（方案 §7）
+_SCHEMA_M2 = """
+CREATE TABLE IF NOT EXISTS drive_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vin TEXT NOT NULL,
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER,
+    start_lat REAL, start_lon REAL,
+    end_lat REAL, end_lon REAL,
+    start_geofence TEXT, end_geofence TEXT,
+    distance_m REAL,                 -- Trip.Total accMileage 增量（m）
+    duration_s INTEGER,
+    avg_speed_kmh REAL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_drive_time ON drive_sessions(vin, start_ms);
+
+CREATE TABLE IF NOT EXISTS positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vin TEXT NOT NULL,
+    drive_session_id INTEGER REFERENCES drive_sessions(id),
+    ts_ms INTEGER NOT NULL,
+    lat REAL NOT NULL, lon REAL NOT NULL,
+    spd REAL, dir REAL, alt REAL,
+    valid INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_pos_session ON positions(drive_session_id, ts_ms);
+
+CREATE TABLE IF NOT EXISTS charge_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vin TEXT NOT NULL,
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER,
+    start_soc REAL, end_soc REAL,
+    power_peak_kw REAL, power_avg_kw REAL,
+    charge_type TEXT,                -- ac/dc（枪型枚举观察期标定）
+    geofence TEXT,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_charge_time ON charge_sessions(vin, start_ms);
+
+CREATE TABLE IF NOT EXISTS charge_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vin TEXT NOT NULL,
+    charge_session_id INTEGER REFERENCES charge_sessions(id),
+    ts_ms INTEGER NOT NULL,
+    soc REAL, power_kw REAL,
+    current REAL, voltage REAL
+);
+CREATE INDEX IF NOT EXISTS idx_charge_sample_session
+    ON charge_samples(charge_session_id, ts_ms);
+
+CREATE TABLE IF NOT EXISTS geofences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    lat REAL NOT NULL, lon REAL NOT NULL,
+    radius_m REAL NOT NULL DEFAULT 100
+);
+"""
+
+USER_VERSION = 3
 
 
 class Database:
@@ -101,6 +163,8 @@ class Database:
                 self._conn.executescript(_SCHEMA_M0)
             if v < 2:
                 self._conn.executescript(_SCHEMA_M1)
+            if v < 3:
+                self._conn.executescript(_SCHEMA_M2)
             if v < USER_VERSION:
                 self._conn.execute(f"PRAGMA user_version = {USER_VERSION}")
 

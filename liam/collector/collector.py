@@ -22,6 +22,7 @@ from ..auth.session_keeper import SessionKeeper
 from ..config import Settings
 from ..core.db import Database
 from .paths import T0_PROBE_PATHS, T1_LOC_PATHS, T2_PATHS, T1_PATHS, batched
+from .sessionizer import Sessionizer
 from .state_machine import (
     S_ASLEEP,
     S_CHARGING,
@@ -44,6 +45,7 @@ class Collector:
         self.vin = vin
         self.sm = StateMachine(db, vin)
         self.sm.bootstrap_from_db()
+        self.sessionizer = Sessionizer(db, vin)
         self.t1_batches = batched(T1_PATHS)
         self.t2_batches = batched(T2_PATHS)
         self.loc_batch = T1_LOC_PATHS
@@ -108,11 +110,14 @@ class Collector:
     # ------------------------------------------------------------------
 
     async def poll_full(self) -> str:
-        """T1 全量批：取数 → 判定输入 → 状态机更新 → 入库。"""
+        """T1 全量批：取数 → 判定输入 → 状态机更新（含会话开闭钩子）→ 入库。"""
         t0 = time.monotonic()
         merged = await self._fetch_multi(self.t1_batches)
         vs = VehicleState(merged, self._prev_max_ts)
+        prev_state = self.sm.state
         state = self.sm.update(vs)
+        if state != prev_state:
+            await self.sessionizer.on_state_change(prev_state, state, merged)
         changes = self._ingest(merged, "T1")
         # 更新 ts 水位
         for dp in merged.values():
@@ -124,15 +129,17 @@ class Collector:
         return state
 
     async def poll_loc(self) -> None:
-        """T1loc 定位微批（10s，行驶态）：只入库，不驱动状态机。"""
+        """T1loc 定位微批（10s，行驶态）：轨迹点入 positions。"""
         merged = await self._fetch(self.loc_batch)
         self._ingest(merged, "T1loc")
+        self.sessionizer.add_position(merged)
 
     async def poll_charge_sample(self) -> None:
-        """T1chg 充电采样（30s，充电态）：入库（M2 起转 charge_samples 表）。"""
+        """T1chg 充电采样（30s，充电态）：入 state + charge_samples。"""
         merged = await self._fetch(
             [p for p in T1_PATHS if "Battery" in p or "Charg" in p])
         self._ingest(merged, "T1chg")
+        self.sessionizer.add_charge_sample(merged)
 
     async def poll_probe(self) -> str | None:
         """T0 休眠探测：在线→立即返回 awake 信号（恢复全量）。"""
