@@ -49,10 +49,9 @@
   {% else %}<p class="muted">OTA 待 T3 采集（24h 内）。</p>{% endif %}
   {% if maint %}
   <table style="margin-top:8px">
-    <tr><th>保养项</th><th>状态</th></tr>
+    <tr><th>保养项</th></tr>
     {% for m in maint %}
-    <tr><td>{{ m.item }}</td>
-        <td class="muted">{{ m.value if m.value is not none else '—' }}</td></tr>
+    <tr><td>{{ m.summary if m.summary else m.item }}{% if not m.summary %}（原始值待解析）{% endif %}</td></tr>
     {% endfor %}
   </table>
   {% else %}<p class="muted">保养计划待 T3 采集。</p>{% endif %}

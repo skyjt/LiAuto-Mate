@@ -86,6 +86,7 @@ async def _serve() -> int:
         # 采集器：会话 OK 才启动（NEED_LOGIN 则等重登后手动/自动拉起）
         vin = _db.query_one("SELECT value FROM meta WHERE key='vin'")
         if vin and keeper.state != "need_login":
+            api.vin = vin["value"]        # travel/chargeRecords 端点要 VIN
             from .collector.collector import Collector
             from .collector.cloud_sync import CloudSync
             col = Collector(api, keeper, _db, settings, vin["value"])

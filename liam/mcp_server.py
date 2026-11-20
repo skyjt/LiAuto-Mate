@@ -33,7 +33,7 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
     # ------------------------------------------------------------------
     # 共享分析器（liam.collector.analysis，MCP 与 Web API 复用）
     # ------------------------------------------------------------------
-    from ..collector.analysis import _ps, visited_places, vampire_drain
+    from .collector.analysis import _ps, visited_places, vampire_drain
 
     @mcp.tool()
 
@@ -74,10 +74,16 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
         for k, p in (("range_elec_km", "Vehicle.Cabin.CLTC.PureElecEnduranceMileInd"),
                      ("range_fuel_km", "Vehicle.Cabin.CLTC.FuelEnduranceMileInd"),
                      ("cabin_temp_c", "Vehicle.Cabin.AC.FrtACIncarTemp"),
-                     ("outside_temp_c", "Vehicle.VehInfo.CarControl.Hvac.DspOtsdTemp"),
                      ("sentry_on", "Vehicle.Sentry.SentinelStatus")):
             v, ts, stale = _num_of(p)
             out[k] = {"value": v, "ts": ts, "stale": stale}
+        # 车外温度十分度（164.0 = 16.4℃）——与 Web 概览同规则
+        v, ts, stale = _num_of("Vehicle.VehInfo.CarControl.Hvac.DspOtsdTemp")
+        try:
+            v = round(float(v) / 10, 1) if v is not None else None
+        except (TypeError, ValueError):
+            v = None
+        out["outside_temp_c"] = {"value": v, "ts": ts, "stale": stale}
         return out
 
     @mcp.tool()

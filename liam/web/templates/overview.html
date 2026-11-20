@@ -5,9 +5,6 @@
 <div class="banner">⚠ 登录已过期，实时数据暂停（历史数据仍正常）。
 <a href="/liam-login"><b>→ 网页重新登录</b></a></div>
 {% endif %}
-<div hx-get="/api/v1/overview.json" hx-trigger="every {{ refresh }}s"
-     hx-swap="none" id="ov-poll" data-refresh="{{ refresh }}"></div>
-
 <div class="grid" id="ov-grid">
   <div class="card" style="grid-column: span 2;">
     <h3>车辆状态</h3>

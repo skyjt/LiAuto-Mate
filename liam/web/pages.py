@@ -25,15 +25,27 @@ templates = Jinja2Templates(directory=str(
 
 
 def _ps(v_json: str | None) -> Any:
-    """state_latest 的 value_json → python 值（可能双重 JSON）。"""
+    """state_latest 的 value_json → python 值（可能双重 JSON）。
+
+    VSS 嵌套对象模式 {id, value, timestamp,...}（VehInfo.CarCenter 族）：
+    解出内层 value —— 实测坑：不解包会把整坨 dict 打上页面（含 accountId）。
+    """
     if v_json is None:
         return None
     v = json.loads(v_json)
     if isinstance(v, str) and v[:1] in "{[":
         try:
-            return json.loads(v)
+            v = json.loads(v)
         except ValueError:
             return v
+    if isinstance(v, dict) and "value" in v and "id" in v:
+        inner = v["value"]
+        if isinstance(inner, str) and inner[:1] in "{[":
+            try:
+                return json.loads(inner)
+            except ValueError:
+                return inner
+        return inner
     return v
 
 
@@ -51,6 +63,12 @@ def _state(db: Database, vin: str) -> dict[str, Any]:
     soc = val("Vehicle.Powertrain.Battery.ResidueBattery")
     range_elec = val("Vehicle.Cabin.CLTC.PureElecEnduranceMileInd")
     range_fuel = val("Vehicle.Cabin.CLTC.FuelEnduranceMileInd")
+    # 车外温度十分度编码（实测 164.0 = 16.4℃ —— App 端 ÷10 显示）
+    out_raw = val("Vehicle.VehInfo.CarControl.Hvac.DspOtsdTemp")
+    try:
+        out_temp = round(float(out_raw) / 10, 1) if out_raw is not None else None
+    except (TypeError, ValueError):
+        out_temp = None
     now_ms = int(time.time() * 1000)
     # 数据新鲜度：拿最近一次采集时间
     anyrow = db.query_one(
@@ -60,7 +78,7 @@ def _state(db: Database, vin: str) -> dict[str, Any]:
         "since_ms": st["start_ms"] if st else None,
         "soc": soc,
         "range_elec": range_elec, "range_fuel": range_fuel,
-        "out_temp": val("Vehicle.VehInfo.CarControl.Hvac.DspOtsdTemp"),
+        "out_temp": out_temp,
         "in_temp": val("Vehicle.Cabin.AC.FrtACIncarTemp"),
         "loc": ({"lat": loc.get("lat"), "lon": loc.get("lon"),
                 "spd": loc.get("spd")}
@@ -171,15 +189,38 @@ async def page_settings(request: Request, name: str = "", lat: str = "",
         "OR path LIKE 'Vehicle.Version.OTA%') ", (vin,))
     maint_rows = db.query_all(
         "SELECT path, value_json, ts_ms FROM state_latest "
-        "WHERE vin=? AND path LIKE 'Vehicle.Carcenter.Maintain.%'",
+        "WHERE vin=? AND path LIKE 'Vehicle.Carcenter.Maintain.%' "
+        "AND path != 'Vehicle.Carcenter.Maintain.Config'",
         (vin,))
     ota = {r["path"]: _ps(r["value_json"]) for r in ota_rows}
     # 当前版本号嵌在 UpgradeProgress.currentVersion
     prog = ota.get("Vehicle.OTA.Upgrade.UpgradeProgress")
     ota_version = (prog.get("currentVersion") if isinstance(prog, dict)
                    else None)
-    maint = [{"item": r["path"].split(".")[-1],
-              "value": _ps(r["value_json"])} for r in maint_rows]
+    # 保养项人性化：提取 名称/剩余里程/到期日（langName 是内嵌 JSON）
+    maint = []
+    for r in maint_rows:
+        v = _ps(r["value_json"])
+        item = {"item": r["path"].split(".")[-1], "value": v}
+        if isinstance(v, dict):
+            # ★ 勿用 `name` 作局部变量——会遮蔽函数参数 name（query 预填）
+            item_name = v.get("name")
+            if isinstance(item_name, str) and item_name[:1] == "{":
+                try:
+                    item_name = json.loads(item_name).get("CN", item_name)
+                except ValueError:
+                    pass
+            left = v.get("maintainLeftMileage")
+            due = v.get("maintainDueDate")
+            due_s = (f"{due[:4]}-{due[4:6]}-{due[6:]}"
+                     if isinstance(due, str) and len(due) == 8 else None)
+            base = item_name or item["item"]
+            item["summary"] = (
+                f"{base}：剩余 {left} km"
+                + (f"（{due_s} 到期）" if due_s else "")
+                if isinstance(left, (int, float)) and not isinstance(left, bool)
+                else (f"{base}" + (f" · {due_s}" if due_s else "")))
+        maint.append(item)
     return await _page(
         request, "settings.html",
         s=settings, keeper=keeper.status() if keeper else None,

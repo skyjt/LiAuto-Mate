@@ -17,14 +17,25 @@ P_LOC = "Vehicle.Location.CurrentLocationInfo"
 
 
 def _ps(v_json: str | None) -> Any:
+    """state value_json → python 值；VSS 嵌套对象 {id, value, timestamp}
+    模式解出内层 value（VehInfo.CarCenter 族——不解包会把整坨 dict
+    连 accountId 一起返回，实测踩坑 11-20）。"""
     if v_json is None:
         return None
     v = json.loads(v_json)
     if isinstance(v, str) and v[:1] in "{[":
         try:
-            return json.loads(v)
+            v = json.loads(v)
         except ValueError:
             return v
+    if isinstance(v, dict) and "value" in v and "id" in v:
+        inner = v["value"]
+        if isinstance(inner, str) and inner[:1] in "{[":
+            try:
+                return json.loads(inner)
+            except ValueError:
+                return inner
+        return inner
     return v
 
 
