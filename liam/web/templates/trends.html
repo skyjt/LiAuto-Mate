@@ -2,9 +2,13 @@
 {% block title %}趋势 · LiAuto-Mate{% endblock %}
 {% block content %}
 <div class="card">
-  <h3>信号趋势（{{ paths | length }} 条路径可选）</h3>
+  <h3>信号趋势</h3>
   <select id="sel-path">
-    {% for p in paths %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+    {% for g, ps in groups.items() %}
+    <optgroup label="{{ g }}（{{ ps | length }}）">
+      {% for p in ps %}<option value="{{ p }}">{{ p.split('.')[-1] }}</option>{% endfor %}
+    </optgroup>
+    {% endfor %}
   </select>
   <select id="sel-hours">
     <option value="6">近 6 小时</option>

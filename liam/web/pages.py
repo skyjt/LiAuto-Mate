@@ -133,10 +133,16 @@ async def page_charging(request: Request):
 async def page_trends(request: Request):
     db: Database = request.app.state.db
     vin: str = request.app.state.vin
-    paths = [r["path"] for r in db.query_all(
+    rows = db.query_all(
         "SELECT DISTINCT path FROM state_latest WHERE vin=? ORDER BY path",
-        (vin,))]
-    return await _page(request, "trends.html", paths=paths)
+        (vin,))
+    # 按二级域分组（optgroup）
+    groups: dict[str, list[str]] = {}
+    for r in rows:
+        parts = r["path"].split(".")
+        key = ".".join(parts[:3]) if len(parts) > 3 else ".".join(parts[:2])
+        groups.setdefault(key, []).append(r["path"])
+    return await _page(request, "trends.html", groups=groups)
 
 
 @router.get("/battery", response_class=HTMLResponse)
@@ -156,10 +162,78 @@ async def page_settings(request: Request):
     keeper = request.app.state.keeper_ref.get("keeper")
     n_latest = db.query_one("SELECT COUNT(*) c FROM state_latest")["c"]
     n_hist = db.query_one("SELECT COUNT(*) c FROM state_history")["c"]
+    geofences = db.query_all("SELECT * FROM geofences ORDER BY name")
     return await _page(
         request, "settings.html",
         s=settings, keeper=keeper.status() if keeper else None,
-        n_latest=n_latest, n_hist=n_hist)
+        n_latest=n_latest, n_hist=n_hist, geofences=geofences)
+
+
+# ----------------------------------------------------------------------
+# 地点管理（geofence）+ 数据导出
+# ----------------------------------------------------------------------
+
+@router.post("/settings/geofence/add")
+async def geofence_add(request: Request):
+    db: Database = request.app.state.db
+    form = await request.form()
+    try:
+        name = str(form.get("name") or "").strip()
+        lat, lon = float(form.get("lat")), float(form.get("lon"))
+        radius = float(form.get("radius") or 100)
+        if not name or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError
+    except (TypeError, ValueError):
+        return RedirectResponse("/settings?err=参数不合法", status_code=302)
+    db.execute(
+        "INSERT INTO geofences(name, lat, lon, radius_m) VALUES(?,?,?,?)",
+        (name, lat, lon, radius))
+    return RedirectResponse("/settings", status_code=302)
+
+
+@router.post("/settings/geofence/delete")
+async def geofence_delete(request: Request):
+    db: Database = request.app.state.db
+    form = await request.form()
+    db.execute("DELETE FROM geofences WHERE id=?", (int(form.get("id") or 0),))
+    return RedirectResponse("/settings", status_code=302)
+
+
+@router.get("/settings/export")
+async def data_export(request: Request, table: str = "db"):
+    """数据导出：table=db 整库 / sessions / cloud（CSV）。"""
+    db: Database = request.app.state.db
+    from fastapi.responses import StreamingResponse
+    if table == "db":
+        import io
+        def gen():
+            with db._lock:    # 只读导出：直接 stream 原文件
+                with open(db._path, "rb") as f:
+                    while chunk := f.read(1 << 16):
+                        yield chunk
+        return StreamingResponse(
+            gen(), media_type="application/octet-stream",
+            headers={"Content-Disposition":
+                     "attachment; filename=liam-export.db"})
+    sql = {"sessions": "SELECT * FROM drive_sessions ORDER BY start_ms",
+           "cloud": "SELECT * FROM charge_records_cloud ORDER BY start_ms",
+           "charge": "SELECT * FROM charge_sessions ORDER BY start_ms"}.get(table)
+    if not sql:
+        return RedirectResponse("/settings", status_code=302)
+    rows = db.query_all(sql)
+    if not rows:
+        return RedirectResponse("/settings?err=空表", status_code=302)
+    import csv
+    import io as _io
+    buf = _io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(rows[0].keys())
+    for r in rows:
+        w.writerow([r[k] for k in rows[0].keys()])
+    return StreamingResponse(
+        iter([buf.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition":
+                 f"attachment; filename={table}.csv"})
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -231,3 +305,48 @@ async def api_charge_samples(request: Request, session_id: int):
         "SELECT ts_ms, soc, power_kw, current, voltage FROM charge_samples "
         "WHERE charge_session_id=? ORDER BY ts_ms", (session_id,))
     return JSONResponse([dict(r) for r in rows])
+
+
+@router.get("/api/v1/states-timeline.json")
+async def api_states_timeline(request: Request, hours: int = 24):
+    db: Database = request.app.state.db
+    vin: str = request.app.state.vin
+    since = int(time.time() * 1000) - hours * 3600 * 1000
+    rows = db.query_all(
+        "SELECT state, start_ms, end_ms FROM states WHERE vin=? "
+        "AND (end_ms IS NULL OR end_ms>?) ORDER BY start_ms", (vin, since))
+    return JSONResponse([dict(r) for r in rows])
+
+
+@router.get("/api/v1/charge-monthly.json")
+async def api_charge_monthly(request: Request):
+    """云端充电记录按月聚合（次数/电量，4 类型分色）。"""
+    db: Database = request.app.state.db
+    vin: str = request.app.state.vin
+    rows = db.query_all(
+        "SELECT substr(datetime(start_ms/1000, 'unixepoch', 'localtime'), 1, 7) ym, "
+        "COUNT(*) n, SUM(energy_kwh) kwh FROM charge_records_cloud "
+        "WHERE vin=? AND start_ms IS NOT NULL GROUP BY ym ORDER BY ym", (vin,))
+    return JSONResponse([dict(r) for r in rows])
+
+
+@router.get("/api/v1/soc-histogram.json")
+async def api_soc_histogram(request: Request):
+    """充电深度分布（近 90 天 SOC 采样按 10% 分桶）。"""
+    db: Database = request.app.state.db
+    vin: str = request.app.state.vin
+    since = int(time.time() * 1000) - 90 * 86400 * 1000
+    rows = db.query_all(
+        "SELECT value_json FROM state_history WHERE vin=? AND path=? "
+        "AND ingested_at_ms>? ", (vin,
+        "Vehicle.Powertrain.Battery.ResidueBattery", since))
+    buckets = [0] * 10
+    n = 0
+    for r in rows:
+        try:
+            v = float(_ps(r["value_json"]))
+            buckets[min(int(v // 10), 9)] += 1
+            n += 1
+        except (TypeError, ValueError):
+            pass
+    return JSONResponse({"samples": n, "buckets": buckets})

@@ -141,6 +141,8 @@ CREATE TABLE IF NOT EXISTS geofences (
 );
 """
 
+USER_VERSION = 3
+
 # M3 增补：云端历史镜像（幂等 upsert，方案 §4.2）
 _SCHEMA_M3 = """
 CREATE TABLE IF NOT EXISTS travel_daily (
@@ -164,6 +166,20 @@ CREATE INDEX IF NOT EXISTS idx_crc_time ON charge_records_cloud(vin, start_ms);
 """
 
 USER_VERSION = 4
+
+# M6-info 增补：行车能耗推导（SOC 差 × 电池容量，方案 §8.4 efficiency）
+_SCHEMA_M6 = """
+ALTER TABLE drive_sessions ADD COLUMN energy_kwh REAL;
+ALTER TABLE drive_sessions ADD COLUMN efficiency_kwh_100 REAL;
+CREATE TABLE IF NOT EXISTS drive_soc_marks (
+    drive_session_id INTEGER NOT NULL,
+    ts_ms INTEGER NOT NULL,
+    soc REAL NOT NULL,
+    PRIMARY KEY (drive_session_id, ts_ms)
+);
+"""
+
+USER_VERSION = 5
 
 
 class Database:
@@ -189,6 +205,8 @@ class Database:
                 self._conn.executescript(_SCHEMA_M2)
             if v < 4:
                 self._conn.executescript(_SCHEMA_M3)
+            if v < 5:
+                self._conn.executescript(_SCHEMA_M6)
             if v < USER_VERSION:
                 self._conn.execute(f"PRAGMA user_version = {USER_VERSION}")
 
@@ -207,6 +225,13 @@ class Database:
         with self._lock, self._conn:
             cur = self._conn.execute(sql, params)
             return cur.lastrowid or 0
+
+    def execute_ret(self, sql: str, params: tuple = ()) -> int:
+        """执行并返回受影响行数（DELETE/UPDATE 统计用，自动提交）。"""
+        with self._lock, self._conn:
+            cur = self._conn.execute(sql, params)
+            self._conn.commit()
+            return cur.rowcount
 
     def executemany(self, sql: str, rows: list[tuple]) -> None:
         """多行写入（单事务）：latest upsert + history insert 原子落库。"""

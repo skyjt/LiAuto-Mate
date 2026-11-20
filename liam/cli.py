@@ -87,11 +87,16 @@ async def _serve() -> int:
         vin = _db.query_one("SELECT value FROM meta WHERE key='vin'")
         if vin and keeper.state != "need_login":
             from .collector.collector import Collector
+            from .collector.cloud_sync import CloudSync
             col = Collector(api, keeper, _db, settings, vin["value"])
             collector_task.append(asyncio.create_task(
                 col.run_forever(), name="collector"))
+            sync = CloudSync(api, _db, vin["value"],
+                             retention_days=settings.retention_days)
+            collector_task.append(asyncio.create_task(
+                sync.run_daily(), name="cloud-sync"))
             logging.getLogger(__name__).info(
-                "collector started vin=%s", vin["value"])
+                "collector + cloud-sync started vin=%s", vin["value"])
         else:
             logging.getLogger(__name__).warning(
                 "collector 未启动（vin=%s state=%s）",

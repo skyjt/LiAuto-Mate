@@ -12,6 +12,7 @@
     {% if keeper.last_error %}
     <div class="kv"><span class="muted">最近错误</span><b class="muted">{{ keeper.last_error[:80] }}</b></div>
     {% endif %}
+    <a href="/liam-login"><button>重新登录（短信）</button></a>
     {% else %}<p class="muted">未启动</p>{% endif %}
   </div>
   <div class="card">
@@ -22,6 +23,7 @@
     <div class="kv"><span class="muted">休眠探测</span><b>{{ s.poll_sleep_probe }}s</b></div>
     <div class="kv"><span class="muted">配置档</span><b>{{ s.poll_config }}s</b></div>
     <div class="kv"><span class="muted">历史保留</span><b>{{ s.retention_days }} 天</b></div>
+    <div class="kv"><span class="muted">电池容量</span><b>{{ s.battery_kwh }} kWh</b></div>
   </div>
   <div class="card">
     <h3>数据</h3>
@@ -31,6 +33,42 @@
       <b>{{ '已启用' if s.mcp_token else '未设置 token（关闭）' }}</b></div>
     <div class="kv"><span class="muted">地图 provider</span>
       <b>{{ '高德 JS API' if s.amap_key else '高德瓦片直连' }}{% if s.map_provider == 'osm' %}（强制 OSM）{% endif %}</b></div>
+    <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
+      <a href="/settings/export?table=db"><button>整库 .db</button></a>
+      <a href="/settings/export?table=sessions"><button>行程 CSV</button></a>
+      <a href="/settings/export?table=cloud"><button>云端充电 CSV</button></a>
+      <a href="/settings/export?table=charge"><button>充电会话 CSV</button></a>
+    </div>
   </div>
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>常去地点（geofence —— 会话自动命名「家 → 公司」）</h3>
+  {% if geofences %}
+  <table>
+    <tr><th>名称</th><th>纬度</th><th>经度</th><th>半径</th><th></th></tr>
+    {% for g in geofences %}
+    <tr>
+      <td>{{ g.name }}</td>
+      <td>{{ '%.5f' % g.lat }}</td>
+      <td>{{ '%.5f' % g.lon }}</td>
+      <td>{{ g.radius_m }} m</td>
+      <td>
+        <form method="post" action="/settings/geofence/delete" style="display:inline">
+          <input type="hidden" name="id" value="{{ g.id }}">
+          <button>删除</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">还没有命名地点——加一个「家」试试（在概览页复制当前坐标）。</p>{% endif %}
+  <form method="post" action="/settings/geofence/add" style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap">
+    <input name="name" placeholder="名称（如：家）" required>
+    <input name="lat" placeholder="纬度" required style="width:110px">
+    <input name="lon" placeholder="经度" required style="width:110px">
+    <input name="radius" placeholder="半径 m" value="100" style="width:90px">
+    <button>添加</button>
+  </form>
 </div>
 {% endblock %}

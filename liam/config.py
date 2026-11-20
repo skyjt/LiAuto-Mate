@@ -35,6 +35,7 @@ class Settings(BaseSettings):
 
     # --- 存储 ---
     retention_days: int = 90         # state_history 原始 change 保留天数（0=永久）
+    battery_kwh: float = 42.8        # 电池容量（L7 Air 官方值；能耗推导用，可配）
 
     # --- MCP ---
     mcp_token: str = ""              # 空 = /mcp 整体关闭

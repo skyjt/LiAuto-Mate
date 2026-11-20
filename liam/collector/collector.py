@@ -45,7 +45,7 @@ class Collector:
         self.vin = vin
         self.sm = StateMachine(db, vin)
         self.sm.bootstrap_from_db()
-        self.sessionizer = Sessionizer(db, vin)
+        self.sessionizer = Sessionizer(db, vin, battery_kwh=settings.battery_kwh)
         self.t1_batches = batched(T1_PATHS)
         self.t2_batches = batched(T2_PATHS)
         self.loc_batch = T1_LOC_PATHS

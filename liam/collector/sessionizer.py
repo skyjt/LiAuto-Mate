@@ -49,12 +49,15 @@ def _parse_loc(value: Any) -> tuple[float, float] | None:
 
 
 class Sessionizer:
-    def __init__(self, db: Database, vin: str) -> None:
+    def __init__(self, db: Database, vin: str,
+                 battery_kwh: float = 42.8) -> None:
         self.db = db
         self.vin = vin
+        self.battery_kwh = battery_kwh
         self._drive_id: int | None = None
         self._charge_id: int | None = None
         self._trip_base_m: float | None = None
+        self._drive_start_soc: float | None = None
         self._charge_peak_kw: float = 0.0
         self._charge_power_sum: float = 0.0
         self._charge_sample_n: int = 0
@@ -106,13 +109,19 @@ class Sessionizer:
         elif isinstance(trip, dict):
             trip_m = float(trip.get("accMileage", 0) or 0)
         self._trip_base_m = trip_m
+        self._drive_start_soc = _num(merged.get(P_SOC, {}).get("value"))
         gf = self.match_geofence(*loc) if loc else None
         self._drive_id = self.db.insert(
             "INSERT INTO drive_sessions(vin, start_ms, start_lat, start_lon, "
             "start_geofence, created_at_ms, updated_at_ms) VALUES(?,?,?,?,?,?,?)",
             (self.vin, now, loc[0] if loc else None, loc[1] if loc else None,
              gf, now, now))
-        log.info("行车会话 #%s 开启（起 %s）", self._drive_id, gf or "未知位置")
+        if self._drive_start_soc is not None:
+            self.db.execute(
+                "INSERT OR REPLACE INTO drive_soc_marks(drive_session_id, ts_ms, soc) "
+                "VALUES(?,?,?)", (self._drive_id, now, self._drive_start_soc))
+        log.info("行车会话 #%s 开启（起 %s，SOC %s%%）",
+                 self._drive_id, gf or "未知位置", self._drive_start_soc)
 
     def _close_drive(self, merged: dict[str, dict], now: int) -> None:
         if not self._drive_id:
@@ -141,13 +150,31 @@ class Sessionizer:
         avg = None
         if distance and duration_s and duration_s > 0:
             avg = distance / duration_s * 3.6
+        # 能耗推导（M6-info，方案 §8.4 efficiency）：SOC 差 × 电池容量。
+        # 途中充电 → SOC 差为负/失真 → 诚实记 None。
+        energy = None
+        efficiency = None
+        end_soc = _num(merged.get(P_SOC, {}).get("value"))
+        if (self._drive_start_soc is not None and end_soc is not None
+                and end_soc < self._drive_start_soc):
+            energy = round(
+                (self._drive_start_soc - end_soc) / 100 * self.battery_kwh, 3)
+            if distance and distance > 500:
+                efficiency = round(energy / (distance / 1000), 2)
+        if end_soc is not None:
+            self.db.execute(
+                "INSERT OR REPLACE INTO drive_soc_marks(drive_session_id, ts_ms, soc) "
+                "VALUES(?,?,?)", (did, now, end_soc))
+        self._drive_start_soc = None
         self.db.execute(
             "UPDATE drive_sessions SET end_ms=?, end_lat=?, end_lon=?, "
             "end_geofence=?, distance_m=?, duration_s=?, avg_speed_kmh=?, "
-            "updated_at_ms=? WHERE id=?",
+            "energy_kwh=?, efficiency_kwh_100=?, updated_at_ms=? WHERE id=?",
             (now, loc[0] if loc else None, loc[1] if loc else None, gf,
-             distance, int(duration_s) if duration_s else None, avg, now, did))
-        log.info("行车会话 #%s 关闭（终 %s，里程 %s m）", did, gf or "?", distance)
+             distance, int(duration_s) if duration_s else None, avg,
+             energy, efficiency, now, did))
+        log.info("行车会话 #%s 关闭（终 %s，里程 %s m，能耗 %s kWh）",
+                 did, gf or "?", distance, energy)
 
     def add_position(self, merged: dict[str, dict]) -> None:
         """T1loc 轮次：写轨迹点（会话未开则忽略——防漏判边界）。"""

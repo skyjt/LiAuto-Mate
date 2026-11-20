@@ -15,17 +15,19 @@ import logging
 import time
 from typing import Any
 
-from ..auth.li_api import LiApi, LiApiError
+from ..auth.li_api import AuthExpiredError, LiApi, LiApiError
 from ..core.db import Database
 
 log = logging.getLogger(__name__)
 
 
 class CloudSync:
-    def __init__(self, api: LiApi, db: Database, vin: str) -> None:
+    def __init__(self, api: LiApi, db: Database, vin: str,
+                 retention_days: int = 90) -> None:
         self.api = api
         self.db = db
         self.vin = vin
+        self.retention_days = retention_days
         self.last_run_ms = 0
 
     # ------------------------------------------------------------------
@@ -119,13 +121,35 @@ class CloudSync:
 
     # ------------------------------------------------------------------
     async def run_daily(self) -> None:
-        """T4 循环：每天 04:00 跑一次（简化：每 24h 一次，启动即跑）。"""
+        """T4 循环：每天 04:00 跑一次（简化：每 24h 一次，启动即跑）。
+
+        附带 retention 清理（方案 §7）：state_history 原始 change 超过
+        LIAM_RETENTION_DAYS 删除 + incremental_vacuum 回收。
+        """
         while True:
             try:
                 await self.sync_all()
             except LiApiError as e:
                 log.warning("T4 云端同步失败（24h 后再试）: %s", e)
+            except AuthExpiredError:
+                log.warning("T4 跳过（会话需重登）")
+            try:
+                self._retention_sweep()
+            except Exception as e:  # noqa: BLE001
+                log.warning("retention 清理失败: %r", e)
             await asyncio.sleep(24 * 3600)
+
+    def _retention_sweep(self) -> int:
+        days = self.retention_days
+        if days <= 0:
+            return 0
+        cutoff = int(time.time() * 1000) - days * 86400 * 1000
+        cur = self.db.execute_ret(
+            "DELETE FROM state_history WHERE ingested_at_ms < ?", (cutoff,))
+        if cur and cur > 0:
+            self.db.execute("PRAGMA incremental_vacuum")
+            log.info("retention：清理 %d 行（> %d 天）", cur, days)
+        return cur or 0
 
 
 def _f(v: Any) -> float | None:
