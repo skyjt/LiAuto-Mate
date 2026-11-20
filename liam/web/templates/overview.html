@@ -2,7 +2,7 @@
 {% block title %}概览 · LiAuto-Mate{% endblock %}
 {% block content %}
 {% if session and session.state == 'need_login' %}
-<div class="banner">⚠ 登录已过期，实时数据暂停（历史数据仍正常）。
+<div class="banner">登录已过期，实时数据暂停（历史数据仍正常）。
 <a href="/liam-login"><b>→ 网页重新登录</b></a></div>
 {% endif %}
 <div class="grid" id="ov-grid">
@@ -12,12 +12,79 @@
     {% if v.last_ingest_ms %}
     <span class="muted" id="v-fresh">数据采集于 {{ (v.now_ms - v.last_ingest_ms)//60000 }} 分钟前</span>
     {% endif %}
-    <div class="soc" id="v-soc">{{ v.soc if v.soc is not none else '—' }}<small>%</small></div>
-    <div class="kv"><span class="muted">纯电续航</span><b id="v-re">{{ v.range_elec or '—' }} km</b></div>
-    <div class="kv"><span class="muted">燃油续航</span><b id="v-rf">{{ v.range_fuel or '—' }} km</b></div>
-    <div class="kv"><span class="muted">车内温度</span><b>{{ v.in_temp if v.in_temp is not none else '—' }} ℃</b></div>
-    <div class="kv"><span class="muted">车外温度</span><b>{{ v.out_temp if v.out_temp is not none else '—' }} ℃</b></div>
-    <div class="kv"><span class="muted">哨兵</span><b>{{ '开' if v.sentry else '关' }}</b></div>
+
+    <div id="charge-banner" class="charge-banner"
+         style="display: {{ 'flex' if v.state == 'charging' else 'none' }}">
+      <span>充电中</span>
+      <b id="cb-power">{{ v.charge_power or 0 }} kW</b>
+      {% if v.charge_left_min %}<span class="muted" id="cb-left">剩余 {{ (v.charge_left_min / 60) | round(1) }} h</span>{% endif %}
+    </div>
+
+    <div class="car-layout">
+      <!-- ============ 顶视车模（L 系线稿 · 状态着色） ============ -->
+      <svg class="car-svg" viewBox="0 0 240 480" role="img" aria-label="车辆状态模型"
+           id="car-svg" data-locked="{{ '1' if v.doors.main_locked else '0' }}"
+           data-charging="{{ '1' if v.state == 'charging' else '0' }}"
+           data-sentry="{{ '1' if v.sentry else '0' }}">
+        <!-- 车身（未锁 → 描边警示色） -->
+        <rect class="car-body" x="44" y="26" width="152" height="428" rx="46"/>
+        <!-- 大灯 / 尾灯 -->
+        <rect class="car-lamp" x="72" y="34" width="34" height="7" rx="3.5"/>
+        <rect class="car-lamp" x="134" y="34" width="34" height="7" rx="3.5"/>
+        <rect class="car-lamp" x="70" y="438" width="100" height="7" rx="3.5"/>
+        <!-- 四轮（胎压悬浮） -->
+        <g class="wheel" data-tire="FL">
+          <rect x="26" y="84" width="18" height="54" rx="8"/>
+          <title>前左 {{ v.tires.FL or '—' }} kPa</title></g>
+        <g class="wheel" data-tire="FR">
+          <rect x="196" y="84" width="18" height="54" rx="8"/>
+          <title>前右 {{ v.tires.FR or '—' }} kPa</title></g>
+        <g class="wheel" data-tire="RL">
+          <rect x="26" y="326" width="18" height="54" rx="8"/>
+          <title>后左 {{ v.tires.RL or '—' }} kPa</title></g>
+        <g class="wheel" data-tire="RR">
+          <rect x="196" y="326" width="18" height="54" rx="8"/>
+          <title>后右 {{ v.tires.RR or '—' }} kPa</title></g>
+        <!-- 引擎盖缝 -->
+        <line class="car-seam" x1="66" y1="112" x2="174" y2="112"/>
+        <!-- 前挡 -->
+        <path class="car-glass" d="M 74,128 L 166,128 L 158,152 L 82,152 Z"/>
+        <!-- 车顶（天窗区；哨兵开启时点亮哨兵点） -->
+        <rect class="car-roof" x="76" y="152" width="88" height="118" rx="12"/>
+        <circle class="sentry-dot" cx="158" cy="168" r="4"/>
+        <!-- 后挡 -->
+        <path class="car-glass" d="M 82,270 L 158,270 L 166,294 L 74,294 Z"/>
+        <!-- 门缝（纵贯侧面 + 前后门分缝） -->
+        <line class="car-seam" x1="58" y1="150" x2="58" y2="292"/>
+        <line class="car-seam" x1="182" y1="150" x2="182" y2="292"/>
+        <line class="car-seam" x1="58" y1="220" x2="182" y2="220"/>
+        <!-- 门把手 -->
+        <line class="car-handle" x1="50" y1="172" x2="58" y2="172"/>
+        <line class="car-handle" x1="182" y1="172" x2="190" y2="172"/>
+        <line class="car-handle" x1="50" y1="244" x2="58" y2="244"/>
+        <line class="car-handle" x1="182" y1="244" x2="190" y2="244"/>
+        <!-- 四门侧板（开门着色块） -->
+        <path class="door" data-door="main" d="M 44,150 L 58,150 L 58,218 L 44,218 Z"/>
+        <path class="door" data-door="copilot" d="M 182,150 L 196,150 L 196,218 L 182,218 Z"/>
+        <path class="door" data-door="bl" d="M 44,222 L 58,222 L 58,292 L 44,292 Z"/>
+        <path class="door" data-door="br" d="M 182,222 L 196,222 L 196,292 L 182,292 Z"/>
+        <!-- 充电口（左后翼子板；充电中呼吸点亮） -->
+        <rect class="charge-port" x="46" y="300" width="11" height="11" rx="2.5"/>
+      </svg>
+
+      <div class="car-side">
+        <div class="soc" id="v-soc">{{ v.soc if v.soc is not none else '—' }}<small>%</small></div>
+        <div class="kv"><span class="muted">纯电续航</span><b id="v-re">{{ v.range_elec or '—' }} km</b></div>
+        <div class="kv"><span class="muted">燃油续航</span><b id="v-rf">{{ v.range_fuel or '—' }} km</b></div>
+        <div class="kv"><span class="muted">车内温度</span><b>{{ v.in_temp if v.in_temp is not none else '—' }} ℃</b></div>
+        <div class="kv"><span class="muted">车外温度</span><b>{{ v.out_temp if v.out_temp is not none else '—' }} ℃</b></div>
+        <div class="kv"><span class="muted">车辆锁定</span>
+          <b id="v-locked">{{ '已锁' if v.doors.main_locked else '未锁' }}</b></div>
+        <div class="kv"><span class="muted">哨兵</span>
+          <b id="v-sentry">{{ '开' if v.sentry else '关' }}</b></div>
+        <p class="muted car-tip">门/锁状态直接显示在车模上 · 悬停轮胎看胎压</p>
+      </div>
+    </div>
   </div>
   <div class="card">
     <h3>门锁 / 位置</h3>
@@ -40,7 +107,35 @@
 </div>
 
 <script>
-// 概览 30s 局部刷新：JSON 拉回后原地更新（比 hx-swap 更精准）
+const D = {{ v.doors | tojson }};
+
+function updateCar(v) {
+  const svg = document.getElementById('car-svg');
+  if (!svg) return;
+  // 门：非零=开（实测静止全 0）
+  for (const [k, key] of [['main', 'door_main'], ['copilot', 'door_copilot'],
+                          ['bl', 'door_bl'], ['br', 'door_br']]) {
+    const el = svg.querySelector(`.door[data-door="${k}"]`);
+    if (el) el.dataset.open = (v.doors[key] != 0) ? '1' : '0';
+  }
+  svg.dataset.locked = v.doors.main_locked ? '1' : '0';
+  svg.dataset.charging = (v.state === 'charging') ? '1' : '0';
+  svg.dataset.sentry = v.sentry ? '1' : '0';
+  const banner = document.getElementById('charge-banner');
+  if (banner) {
+    banner.style.display = (v.state === 'charging') ? 'flex' : 'none';
+    document.getElementById('cb-power').textContent = (v.charge_power ?? 0) + ' kW';
+  }
+  const lk = document.getElementById('v-locked');
+  if (lk) lk.textContent = v.doors.main_locked ? '已锁' : '未锁';
+  const sn = document.getElementById('v-sentry');
+  if (sn) sn.textContent = v.sentry ? '开' : '关';
+}
+
+// 初始渲染（SSR data 属性兜底后立即对齐）
+updateCar({{ v | tojson }});
+
+// 概览 30s 局部刷新 + 车模联动
 setInterval(async () => {
   const r = await fetch('/api/v1/overview.json');
   const v = await r.json();
@@ -49,6 +144,7 @@ setInterval(async () => {
   set('v-state', v.state);
   document.getElementById('v-soc').innerHTML = (v.soc ?? '—') + '<small>%</small>';
   set('v-fresh', '数据采集于 ' + Math.max(0, Math.round((v.now_ms - v.last_ingest_ms)/60000)) + ' 分钟前');
+  updateCar(v);
 }, {{ refresh * 1000 }});
 </script>
 {% endblock %}

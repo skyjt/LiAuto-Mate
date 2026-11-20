@@ -45,3 +45,45 @@ button:hover { border-color: var(--accent); }
 .banner { background: #3a2a12; color: var(--warn); border: 1px solid #6b5320;
           padding: 8px 14px; border-radius: 8px; margin-bottom: 14px; }
 .banner a { color: var(--warn); }
+
+/* ===== 顶视车模（概览车辆状态卡） ===== */
+.car-layout { display: grid; grid-template-columns: 190px 1fr;
+              gap: 22px; align-items: center; margin-top: 10px; }
+@media (max-width: 640px) {
+  .car-layout { grid-template-columns: 1fr; }
+  .car-svg { max-width: 190px; margin: 0 auto; }
+}
+.car-svg { width: 100%; color: var(--muted); }
+.car-body { fill: var(--panel); stroke: var(--fg); stroke-width: 2;
+            filter: drop-shadow(0 4px 18px rgba(0,0,0,.5)); }
+.car-svg[data-locked="0"] .car-body { stroke: var(--warn); animation: car-pulse 2s ease-in-out infinite; }
+.car-glass { fill: #10131a; stroke: currentColor; stroke-width: 1.6; opacity: .9; }
+.car-roof { fill: #0c0f14; stroke: currentColor; stroke-width: 1.6; }
+.car-seam { stroke: currentColor; stroke-width: 1.4; opacity: .55; }
+.car-handle { stroke: currentColor; stroke-width: 1.8; opacity: .8; }
+.car-lamp { fill: #2a2f3a; stroke: none; }
+.wheel rect { fill: #05070a; stroke: var(--muted); stroke-width: 1.6; }
+/* 门开关：开门 → 侧板红 */
+.door { fill: transparent; stroke: none; transition: fill .3s; }
+.door[data-open="1"] { fill: rgba(242, 109, 109, .28);
+                       stroke: var(--bad); stroke-width: 2; }
+/* 充电口：充电中呼吸点亮 */
+.charge-port { fill: #2a2f3a; stroke: currentColor; stroke-width: 1.4; }
+.car-svg[data-charging="1"] .charge-port {
+  fill: var(--ok); stroke: var(--ok); animation: car-pulse 1.6s ease-in-out infinite; }
+/* 哨兵点：开启时点亮 */
+.sentry-dot { fill: #2a2f3a; }
+.car-svg[data-sentry="1"] .sentry-dot { fill: var(--ok); }
+/* 充电横幅 */
+.charge-banner { display: flex; gap: 16px; align-items: baseline; margin: 10px 0 2px;
+                 padding: 8px 14px; border-radius: 8px;
+                 background: #14301f; border: 1px solid #2b5a41;
+                 color: var(--ok); font-weight: 600; }
+.car-tip { font-size: 12px; margin: 10px 0 0; }
+@keyframes car-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .car-body, .charge-port { animation: none !important; }
+}

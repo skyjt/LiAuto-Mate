@@ -87,7 +87,16 @@ def _state(db: Database, vin: str) -> dict[str, Any]:
         "doors": {
             "main_locked": val("Vehicle.Body.DoorLockStatus.MainDoor"),
             "trunk": val("Vehicle.Body.DoorLockStatus.TrunkDoor"),
+            # 门开关（实测 11-20 静止全 0 → 0=关，非零=开；尾门枚举语义
+            # 未标定不单独高亮；充电口盖同理）
+            "door_main": val("Vehicle.Body.DoorSwitchStatus.MainDoor"),
+            "door_copilot": val("Vehicle.Body.DoorSwitchStatus.CopilotDoor"),
+            "door_bl": val("Vehicle.Body.DoorSwitchStatus.BackLeftDoor"),
+            "door_br": val("Vehicle.Body.DoorSwitchStatus.BackRightDoor"),
         },
+        "charge_power": val("Vehicle.Powertrain.Battery.CLTCChargePower"),
+        "charge_left_min": val(
+            "Vehicle.Powertrain.Battery.ChargeSurplusTime"),
         "tires": {
             "FL": val("Vehicle.Chassis.Tire.FLTirePressure"),
             "FR": val("Vehicle.Chassis.Tire.FRTirePressure"),
