@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}重新登录 · LiAuto-Mate{% endblock %}
+{% block content %}
+<div class="card" style="max-width:520px">
+  <h3>理想账号重登（短信验证码）</h3>
+
+  <div id="phase-start">
+    <div class="kv"><span class="muted">手机号</span>
+      <input id="phone" value="{{ phone }}" placeholder="11 位手机号"
+             {% if phone %}readonly{% endif %} style="width:180px"></div>
+    <p class="muted" style="font-size:12px">
+      流程：点击开始 → 自动填号/滑块（无需人工）→ 短信发出后在这里输入验证码。
+      短信约 2 条/10 分钟限频，请勿频繁发起。
+    </p>
+    <button onclick="startFlow()">① 开始（自动到发短信为止）</button>
+    {% if cooldown_left > 0 %}
+    <span class="muted" id="cd">冷却 {{ cooldown_left // 60 }} 分 {{ cooldown_left % 60 }} 秒</span>
+    {% endif %}
+  </div>
+
+  <div id="phase-code" style="display:none">
+    <p>📨 短信已发送至 <b id="phone-tail">****</b>，请输入验证码：</p>
+    <input id="code" placeholder="6 位验证码" maxlength="8" style="width:140px">
+    <button onclick="submitCode()">② 提交</button>
+  </div>
+
+  <div id="phase-done" style="display:none">
+    <p>✅ 登录成功，会话已恢复。2 秒后返回概览…</p>
+  </div>
+
+  <div id="flow-status" class="muted" style="margin-top:14px; font-size:12px;
+       white-space:pre-wrap"></div>
+  <img id="shot" style="max-width:100%; border-radius:8px; margin-top:10px; display:none">
+</div>
+
+<script>
+let _timer = null;
+const $ = id => document.getElementById(id);
+
+async function poll() {
+  const st = await (await fetch('/liam-login/status.json')).json();
+  $('flow-status').textContent = (st.log || []).join('\n') + (st.error ? '\n!! ' + st.error : '');
+  if (st.screenshot) { $('shot').src = 'data:image/png;base64,' + st.screenshot; $('shot').style.display = 'block'; }
+  if (st.state === 'waiting_code') {
+    $('phase-start').style.display = 'none';
+    $('phase-code').style.display = 'block';
+    $('phone-tail').textContent = '****' + st.phone_tail;
+    if (!_codeFocus) { $('code').focus(); _codeFocus = true; }
+  }
+  if (st.state === 'done' || st.state === 'submitting') {
+    $('phase-start').style.display = 'none';
+    $('phase-code').style.display = st.state === 'submitting' ? 'block' : 'none';
+    if (st.state === 'done') {
+      const fin = await (await fetch('/liam-login/finish.json')).json();
+      if (fin.ok) {
+        $('phase-code').style.display = 'none';
+        $('phase-done').style.display = 'block';
+        clearInterval(_timer);
+        setTimeout(() => location.href = '/', 2000);
+      }
+    }
+  }
+  if (st.state === 'failed') {
+    $('phase-code').style.display = 'none';
+    $('phase-start').style.display = 'block';   // 允许重试
+    clearInterval(_timer);
+  }
+}
+let _codeFocus = false;
+
+async function startFlow() {
+  const r = await fetch('/liam-login/start', {method: 'POST',
+    body: new URLSearchParams({phone: $('phone').value})});
+  const j = await r.json();
+  if (!j.ok) { alert(j.error); return; }
+  $('phase-start').style.display = 'none';
+  $('flow-status').textContent = '启动中…（打开登录页/填号/滑块自动进行）';
+  _timer = setInterval(poll, 3000);
+}
+async function submitCode() {
+  const r = await fetch('/liam-login/code', {method: 'POST',
+    body: new URLSearchParams({code: $('code').value})});
+  const j = await r.json();
+  if (!j.ok) { alert(j.error); return; }
+  $('flow-status').textContent = '提交中…';
+}
+
+// 打开页面时若流程已在跑，直接进入轮询
+poll().then(() => {
+  fetch('/liam-login/status.json').then(r => r.json()).then(st => {
+    if (['running','waiting_code','submitting'].includes(st.state) && !_timer) {
+      _timer = setInterval(poll, 3000);
+    }
+  });
+});
+</script>
+{% endblock %}

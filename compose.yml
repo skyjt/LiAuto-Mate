@@ -1,0 +1,16 @@
+services:
+  liauto-mate:
+    image: ghcr.io/CHANGE_ME/liauto-mate:latest   # ← 换成你的镜像名；本机构建用 build: .
+    build: .
+    container_name: liauto-mate
+    ports: ["8080:8080"]
+    volumes: ["liauto-mate-data:/data"]           # SQLite + 加密凭据，全部状态在此
+    environment:
+      LIAM_UI_PASSWORD: "${LIAM_UI_PASSWORD:?必填：Web 访问密码}"
+      LIAM_PHONE: "${LIAM_PHONE:-}"              # 可选；重登面板预填
+      LIAM_MCP_TOKEN: "${LIAM_MCP_TOKEN:-}"      # 可选；设置才启用 /mcp
+      LIAM_AMAP_KEY: "${LIAM_AMAP_KEY:-}"        # 可选；有 key 走高德 JS API
+      TZ: "${TZ:-Asia/Shanghai}"
+    restart: unless-stopped
+volumes:
+  liauto-mate-data: {}

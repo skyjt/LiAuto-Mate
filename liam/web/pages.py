@@ -62,8 +62,10 @@ def _state(db: Database, vin: str) -> dict[str, Any]:
         "range_elec": range_elec, "range_fuel": range_fuel,
         "out_temp": val("Vehicle.VehInfo.CarControl.Hvac.DspOtsdTemp"),
         "in_temp": val("Vehicle.Cabin.AC.FrtACIncarTemp"),
-        "loc": {"lat": loc.get("lat"), "lon": loc.get("lon"),
-                "spd": loc.get("spd")} if isinstance(loc, dict) else None,
+        "loc": ({"lat": loc.get("lat"), "lon": loc.get("lon"),
+                "spd": loc.get("spd")}
+                if isinstance(loc, dict) and loc.get("lat") is not None
+                else None),
         "doors": {
             "main_locked": val("Vehicle.Body.DoorLockStatus.MainDoor"),
             "trunk": val("Vehicle.Body.DoorLockStatus.TrunkDoor"),

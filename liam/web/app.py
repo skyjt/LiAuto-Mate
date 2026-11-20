@@ -59,6 +59,17 @@ def create_app(settings: Settings, keeper_ref: dict,
     templates.env.filters["ctime"] = _ctime
     app.include_router(pages_router)
 
+    # 网页重登面板（M5/D4）：flow 需要 SessionStore（凭据落库）
+    import os as _os
+    from ..auth.session_store import SessionStore
+    from ..core.secrets import SecretBox
+    from ..login.flow import LoginFlow
+    from .login_routes import router as login_router
+    app.state.login_flow = LoginFlow(
+        SessionStore(db, SecretBox.load_or_create(settings.data_dir)),
+        headless=bool(int(_os.environ.get("LIAM_LOGIN_HEADLESS", "1"))))
+    app.include_router(login_router)
+
     # MCP（token 未设=整体关闭，方案 §8.3）
     if settings.mcp_token:
         try:

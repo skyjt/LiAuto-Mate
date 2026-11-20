@@ -5,16 +5,42 @@
 > 设计文档：`../lixiangtongxue/docs/design/06-liauto-mate-可行性与设计方案.md`（v1.6）
 > 协议与证据仓库：`../lixiangtongxue`（spike 实测、逆向报告、参考实现）
 
-## 当前状态：M0 已完成（2026-11-19）
+## 当前状态：M0–M5 全部完成并真实验证（2026-11-20）
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| **M0 骨架+认证核心** | 仓库/配置/SQLite(WAL)/AES-GCM 凭据/key_suite+signer(8.25.4 配方)/LiApi/SessionStore+SessionKeeper/`/healthz`+`/api/v1/system/status`；单测 8/8；**真实链路 smoke 验收通过**（凭据恢复→refresh→scope→签名批读真实车况） | ✅ |
-| M1 采集器+四态状态机 | T0–T4 分档轮询、行驶/充电/静止/休眠状态机、滞回与退避 | 待开工 |
-| M2 会话推导 | 充电/行车/停车功耗、states 时间线、geofence 命名 | |
-| M3 云端历史同步 | travel/chargeRecords/OTA/保养 | |
-| M4 Web UI + MCP | 6 页 + 登录面板 + `/mcp` 只读 12 工具 | |
-| M5 部署闭环 | 单容器 compose、首启向导 | |
+| **M0 骨架+认证核心** | SQLite(WAL)/AES-GCM 凭据/key_suite+signer(8.25.4)/LiApi/SessionKeeper；smoke 全链路验收 | ✅ |
+| **M1 采集器+四态状态机** | 76 实测路径分档、滞回状态机、ts 分层修正 | ✅ |
+| **M2 会话推导** | 行车/充电会话+positions+geofence；真实行车会话落库验证 | ✅ |
+| **M3 云端历史同步** | travel+chargeRecords 幂等入库（实测 40+20 条） | ✅ |
+| **M4 Web UI + MCP** | 6 页+登录/UI 密码 + `/mcp` 只读 12 工具真实验证 | ✅ |
+| **M5 部署闭环** | Dockerfile(2.2GB 含 Chromium，libatomic1 实测修复)+compose+**网页重登面板**（滑块自动解全流程移植）+**干净容器验收通过**（空卷首启→横幅→重登入口→密码/降级全对） | ✅ |
+
+待实车标定项（不阻塞）：充电枚举（等一次真实充电）、Trip 单位（一次行程核对）、重登面板端到端（**12-02 前后 sso cookie 到期时真实演练**）。
+
+## 部署（单容器/单卷/单端口）
+
+```bash
+cp .env.example .env           # LIAM_UI_PASSWORD 必填
+docker compose up -d           # 首次构建 ~5-10min（含 Chromium）
+# 首启：浏览器打开 http://<host>:8080 → 设置密码登录 → /liam-login 完成理想账号短信登录
+```
+
+- 全部状态在 `liauto-mate-data` 卷（SQLite + AES-GCM 加密凭据）；备份/迁移 = 拷卷
+- 登录过期（约 13 天一次）：概览页横幅「→ 网页重新登录」→ 三步完成（自动滑块 → 输短信码 → 恢复采集）
+- ARM NAS：`docker buildx build --platform linux/arm64,linux/amd64 --push ...` 出多架构镜像
+
+## MCP（Agent 接入）
+
+设置 `LIAM_MCP_TOKEN` 后启动，Agent 端点 `http://<host>:8080/mcp/`（streamable HTTP，Bearer 必需）：
+
+```json
+{ "mcpServers": { "liauto-mate": {
+    "url": "http://192.168.x.x:8080/mcp/",
+    "headers": { "Authorization": "Bearer <LIAM_MCP_TOKEN>" } } } }
+```
+
+12 个只读工具：`get_vehicle_status`（实时快照含 stale 标志）/`get_state_group`/`get_signal_history`/`get_drive_sessions`/`get_drive_route`/`get_charge_sessions`/`get_charge_records_cloud`/`get_efficiency_stats`/`get_geofences`/`get_states_timeline`/`get_battery_health`/`get_system_health`。未设 token = MCP 整体关闭。
 
 ## 快速开始（开发机）
 

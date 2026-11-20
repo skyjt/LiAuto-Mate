@@ -97,6 +97,27 @@ class SessionKeeper:
                 pass
         await self.api.aclose()
 
+    async def recover(self) -> None:
+        """网页重登成功后复位：restore 新凭据 → 主动续期 → 重启看护循环。"""
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        self.scope_token = ""
+        self.scope_token_at = 0.0
+        self.store.restore_into(self.api)
+        try:
+            await self.api.refresh_bearer()
+            self.store.persist_all(self.api)
+            self._set_state(S_OK, "网页重登成功")
+            log.info("重登成功，会话已恢复")
+        except Exception as e:  # noqa: BLE001
+            self._set_state(S_DEGRADED, f"重登后续期失败: {e}")
+        self._task = asyncio.create_task(self._loop(), name="session-keeper")
+
     # ------------------------------------------------------------------
     # scope token（实时通道钥匙，900s 寿命）
     # ------------------------------------------------------------------

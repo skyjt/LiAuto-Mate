@@ -2,7 +2,8 @@
 {% block title %}概览 · LiAuto-Mate{% endblock %}
 {% block content %}
 {% if session and session.state == 'need_login' %}
-<div class="banner">⚠ 登录已过期，实时数据暂停（历史数据仍正常）。请运行重登流程。</div>
+<div class="banner">⚠ 登录已过期，实时数据暂停（历史数据仍正常）。
+<a href="/liam-login"><b>→ 网页重新登录</b></a></div>
 {% endif %}
 <div hx-get="/api/v1/overview.json" hx-trigger="every {{ refresh }}s"
      hx-swap="none" id="ov-poll" data-refresh="{{ refresh }}"></div>
@@ -26,7 +27,7 @@
     <div class="kv"><span class="muted">主驾锁</span><b>{{ '已锁' if v.doors.main_locked else '未锁' }}</b></div>
     <div class="kv"><span class="muted">尾门</span><b>{{ '已锁' if v.doors.trunk else '未锁' }}</b></div>
     <div class="kv"><span class="muted">车联网</span><b>{{ '在线' if v.online else '离线' }}</b></div>
-    {% if v.loc %}
+    {% if v.loc and v.loc.lat %}
     <div class="kv"><span class="muted">坐标</span>
       <b>{{ '%.4f' % v.loc.lat }}, {{ '%.4f' % v.loc.lon }}</b></div>
     <div class="kv"><span class="muted">速度</span><b>{{ v.loc.spd or 0 }} km/h</b></div>
