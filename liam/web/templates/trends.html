@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}趋势 · LiAuto-Mate{% endblock %}
+{% block content %}
+<div class="card">
+  <h3>信号趋势（{{ paths | length }} 条路径可选）</h3>
+  <select id="sel-path">
+    {% for p in paths %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+  </select>
+  <select id="sel-hours">
+    <option value="6">近 6 小时</option>
+    <option value="24" selected>近 24 小时</option>
+    <option value="168">近 7 天</option>
+    <option value="720">近 30 天</option>
+  </select>
+  <button onclick="loadChart()">查看</button>
+</div>
+<div class="card" style="margin-top:14px">
+  <div id="chart" class="chart"></div>
+</div>
+<script>
+let _chart;
+async function loadChart() {
+  const path = document.getElementById('sel-path').value;
+  const hours = document.getElementById('sel-hours').value;
+  const data = await (await fetch(
+    `/api/v1/signal/${encodeURIComponent(path)}.json?hours=${hours}`)).json();
+  if (!_chart) _chart = echarts.init(document.getElementById('chart'));
+  _chart.setOption({
+    title: { text: path, textStyle: {color: '#8a93a6', fontSize: 13} },
+    xAxis: { type: 'time' },
+    yAxis: { type: 'value', scale: true },
+    series: [{ type: 'line', showSymbol: false, smooth: true,
+               data: data.points.map(p => [p.t, p.v]) }],
+    tooltip: { trigger: 'axis' },
+    grid: { left: 50, right: 20, top: 40, bottom: 30 },
+    darkMode: true,
+  }, true);
+}
+</script>
+{% endblock %}

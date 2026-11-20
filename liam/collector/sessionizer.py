@@ -107,12 +107,11 @@ class Sessionizer:
             trip_m = float(trip.get("accMileage", 0) or 0)
         self._trip_base_m = trip_m
         gf = self.match_geofence(*loc) if loc else None
-        cur = self.db._conn.execute(
+        self._drive_id = self.db.insert(
             "INSERT INTO drive_sessions(vin, start_ms, start_lat, start_lon, "
             "start_geofence, created_at_ms, updated_at_ms) VALUES(?,?,?,?,?,?,?)",
             (self.vin, now, loc[0] if loc else None, loc[1] if loc else None,
              gf, now, now))
-        self._drive_id = cur.lastrowid
         log.info("行车会话 #%s 开启（起 %s）", self._drive_id, gf or "未知位置")
 
     def _close_drive(self, merged: dict[str, dict], now: int) -> None:
@@ -174,11 +173,10 @@ class Sessionizer:
         soc = _num(merged.get(P_SOC, {}).get("value"))
         loc = _parse_loc(merged.get(P_LOCATION, {}).get("value"))
         gf = self.match_geofence(*loc) if loc else None
-        cur = self.db._conn.execute(
+        self._charge_id = self.db.insert(
             "INSERT INTO charge_sessions(vin, start_ms, start_soc, geofence, "
             "created_at_ms, updated_at_ms) VALUES(?,?,?,?,?,?)",
             (self.vin, now, soc, gf, now, now))
-        self._charge_id = cur.lastrowid
         self._charge_peak_kw = 0.0
         self._charge_power_sum = 0.0
         self._charge_sample_n = 0

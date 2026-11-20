@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}充电 · LiAuto-Mate{% endblock %}
+{% block content %}
+<div class="card">
+  <h3>充电会话（本地推导）</h3>
+  {% if sessions %}
+  <table>
+    <tr><th>开始</th><th>结束</th><th>起 SOC</th><th>终 SOC</th><th>峰值功率</th><th>地点</th><th></th></tr>
+    {% for s in sessions %}
+    <tr>
+      <td>{{ s.start_ms | ctime }}</td>
+      <td>{{ s.end_ms | ctime if s.end_ms else '进行中' }}</td>
+      <td>{{ s.start_soc }}%</td>
+      <td>{{ s.end_soc or '—' }}%</td>
+      <td>{{ s.power_peak_kw | round(1) if s.power_peak_kw else '—' }} kW</td>
+      <td>{{ s.geofence or '?' }}</td>
+      <td><a href="#" onclick="showCurve({{ s.id }});return false">曲线</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">暂无本地推导会话——充一次电后自动生成。</p>{% endif %}
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3>云端充电记录（可回填历史）</h3>
+  {% if cloud %}
+  <table>
+    <tr><th>时间</th><th>电量</th><th>类型</th></tr>
+    {% for r in cloud %}
+    <tr>
+      <td>{{ r.start_ms | ctime if r.start_ms else r.record_id }}</td>
+      <td>{{ r.energy_kwh or '—' }} kWh</td>
+      <td>{{ {2: '慢充', 1: '快充', 3: '超充', 4: '超充'}.get(r.charging_type, r.charging_type) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">云端记录待 T4 同步。</p>{% endif %}
+</div>
+
+<div class="card" style="margin-top:14px; display:none" id="curve-card">
+  <h3>充电曲线</h3>
+  <div id="curve" class="chart"></div>
+</div>
+<script>
+async function showCurve(id) {
+  document.getElementById('curve-card').style.display = 'block';
+  const pts = await (await fetch('/api/v1/charge-samples.json?session_id=' + id)).json();
+  const chart = echarts.init(document.getElementById('curve'));
+  chart.setOption({
+    xAxis: { type: 'time' },
+    yAxis: [
+      { type: 'value', name: 'SOC %', min: 0, max: 100 },
+      { type: 'value', name: 'kW' }],
+    series: [
+      { name: 'SOC', type: 'line', smooth: true,
+        data: pts.map(p => [p.ts_ms, p.soc]) },
+      { name: '功率', type: 'line', yAxisIndex: 1, smooth: true,
+        data: pts.map(p => [p.ts_ms, p.power_kw]) }],
+    tooltip: { trigger: 'axis' }, darkMode: true,
+  });
+}
+</script>
+{% endblock %}

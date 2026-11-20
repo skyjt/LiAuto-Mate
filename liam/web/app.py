@@ -1,34 +1,74 @@
-"""FastAPI 应用：M0 阶段 = /healthz + /api/v1/system/status。
-
-Web UI（M4）/ MCP（M4）都挂同一 app；此处先立骨架与装配点。
-"""
+"""FastAPI 应用装配：M0 healthz/status + M4 页面/静态/UI 认证 + MCP。"""
 
 from __future__ import annotations
 
+import datetime
 import logging
+import secrets
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
-from . import __version__
-from .config import Settings
+from .. import __version__
+from ..config import Settings
 
 log = logging.getLogger(__name__)
 
 
+def _ctime(ts_ms: float | None) -> str:
+    """模板过滤器：epoch 毫秒 → 本地时间串（直接吃 ms，模板勿再除 1000——
+    Jinja 中 `x / 1000 | ctime` 会解析成 `x / (1000|ctime)`）。"""
+    try:
+        if ts_ms is None:
+            return "—"
+        return datetime.datetime.fromtimestamp(float(ts_ms) / 1000).strftime(
+            "%m-%d %H:%M")
+    except (TypeError, ValueError, OSError):
+        return "—"
+
+
 def create_app(settings: Settings, keeper_ref: dict,
-               lifespan=None) -> FastAPI:
+               lifespan=None, db=None, vin: str = "") -> FastAPI:
     """装配 FastAPI app。
 
-    keeper_ref: {"keeper": SessionKeeper|None} —— 由 serve 注入；
-    lifespan: 由 serve 提供（负责 keeper start/stop）。
+    keeper_ref: {"keeper": SessionKeeper|None}；db/vin 由 serve 注入供页面用。
     """
     app = FastAPI(
         title="LiAuto-Mate",
         version=__version__,
-        docs_url=None, redoc_url=None,   # 单用户自用，不暴露文档面
+        docs_url=None, redoc_url=None,
         lifespan=lifespan,
     )
+    app.state.settings = settings
+    app.state.keeper_ref = keeper_ref
+    app.state.db = db
+    app.state.vin = vin
+
+    # UI 认证（密码未设=开发模式放行）
+    from .ui_auth import UiAuth
+    secret = (settings.secret_key or _load_or_create_secret(db)).encode()
+    app.state.ui_auth = UiAuth(settings.ui_password, secret)
+
+    # 静态文件 + 页面（static 在包根 liam/static，非 web/ 子目录）
+    static = Path(__file__).parent.parent / "static"
+    app.mount("/static", StaticFiles(directory=str(static)), name="static")
+    from .pages import router as pages_router
+    from .pages import templates
+    templates.env.filters["ctime"] = _ctime
+    app.include_router(pages_router)
+
+    # MCP（token 未设=整体关闭，方案 §8.3）
+    if settings.mcp_token:
+        try:
+            from ..mcp_server import mount_mcp
+            mount_mcp(app, db, vin, keeper_ref, settings)
+            log.info("MCP 已挂载 /mcp（Bearer 必需）")
+        except Exception as e:  # noqa: BLE001
+            log.error("MCP 挂载失败（继续无 MCP 运行）: %r", e)
+    else:
+        log.info("LIAM_MCP_TOKEN 未设置：MCP 关闭")
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
@@ -42,3 +82,16 @@ def create_app(settings: Settings, keeper_ref: dict,
                 "session": session}
 
     return app
+
+
+def _load_or_create_secret(db) -> str:
+    """UI 会话签名密钥：meta 表持久化（重启不丢登录态）。"""
+    if db is None:
+        return secrets.token_hex(16)
+    row = db.query_one("SELECT value FROM meta WHERE key='ui_secret'")
+    if row and row["value"]:
+        return row["value"]
+    val = secrets.token_hex(32)
+    db.execute("INSERT INTO meta(key, value) VALUES('ui_secret', ?) "
+               "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (val,))
+    return val

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}电池 · LiAuto-Mate{% endblock %}
+{% block content %}
+<div class="card">
+  <h3>月度里程（云端 travel 口径）</h3>
+  <div id="bar" class="chart"></div>
+</div>
+<div class="card" style="margin-top:14px">
+  <h3>SOC 历史（近 7 天）</h3>
+  <div id="soc" class="chart"></div>
+</div>
+<script>
+(async () => {
+  const bar = echarts.init(document.getElementById('bar'));
+  bar.setOption({
+    xAxis: { type: 'category',
+             data: [{% for m in months %}'{{ m.date }}',{% endfor %}] },
+    yAxis: { type: 'value', name: 'km' },
+    series: [{ type: 'bar', itemStyle: {color: '#4f9cf9'},
+               data: [{% for m in months %}{{ m.mileage_km or 0 }},{% endfor %}] }],
+    tooltip: { trigger: 'axis' }, darkMode: true,
+  });
+  const soc = echarts.init(document.getElementById('soc'));
+  const d = await (await fetch(
+    '/api/v1/signal/Vehicle.Powertrain.Battery.ResidueBattery.json?hours=168')).json();
+  soc.setOption({
+    xAxis: { type: 'time' },
+    yAxis: { type: 'value', min: 0, max: 100, name: 'SOC %' },
+    series: [{ type: 'line', showSymbol: false, step: 'end',
+               data: d.points.map(p => [p.t, p.v]) }],
+    tooltip: { trigger: 'axis' }, darkMode: true,
+  });
+})();
+</script>
+{% endblock %}

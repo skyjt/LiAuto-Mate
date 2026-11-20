@@ -85,13 +85,9 @@ class VehicleState:
         trip = _parse_maybe_json(get(P_TRIP_TOTAL))
         self.trip_m = float(trip.get("accMileage", 0) or 0) if isinstance(trip, dict) else 0.0
 
-        # 行驶：TravelStatus 非零 / 速度>0
-        ts_val = _parse_maybe_json(get(P_TRAVEL_STATUS))
-        try:
-            travel_num = float(ts_val)
-        except (TypeError, ValueError):
-            travel_num = None
-        self.driving = (travel_num not in (None, 0.0)) or self.speed_kmh > 5
+        # 行驶判定（实测修正 11-20）：TravelStatus 静止时=4（非零）不可作
+        # 行驶判据 → 只用速度；Trip 增量判据在 _decide 里与上轮比较
+        self.driving = self.speed_kmh > 5
 
         # ts 新鲜度（观察期发现修正）：只看「持续上报型」路径（5G/Trip.Total）
         # —— 变化才上报型（ChargeStatus/Location）静止时 ts 停更是正常现象
@@ -154,8 +150,10 @@ class StateMachine:
         if vs.charging:
             return S_CHARGING
 
-        # ③ 行驶
-        if vs.driving or vs.speed_kmh > 5:
+        # ③ 行驶：速度>5 或 里程计数器增量（>50m/轮）
+        trip_moved = (vs.trip_m and self._last_trip_m
+                      and vs.trip_m > self._last_trip_m + 50)
+        if vs.driving or trip_moved:
             self._still_rounds = 0
             return S_DRIVING
 

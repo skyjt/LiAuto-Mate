@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}LiAuto-Mate{% endblock %}</title>
+  <link rel="stylesheet" href="/static/vendor/leaflet.css">
+  <link rel="stylesheet" href="/static/css/liam.css">
+  <script src="/static/vendor/htmx.min.js"></script>
+  <script src="/static/vendor/echarts.min.js"></script>
+  <script src="/static/vendor/leaflet.js"></script>
+  <script src="/static/js/gcj02.js"></script>
+</head>
+<body>
+<nav>
+  <span class="brand">⚡ LiAuto-Mate</span>
+  <a href="/">概览</a>
+  <a href="/drives">行程</a>
+  <a href="/charging">充电</a>
+  <a href="/trends">趋势</a>
+  <a href="/battery">电池</a>
+  <a href="/settings">设置</a>
+</nav>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

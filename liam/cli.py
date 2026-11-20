@@ -65,6 +65,11 @@ def _build_stack(vin: str):
     return settings, db, api, store, keeper
 
 
+def _vin_of(db) -> str:
+    row = db.query_one("SELECT value FROM meta WHERE key='vin'")
+    return row["value"] if row else ""
+
+
 async def _serve() -> int:
     import uvicorn
     from contextlib import asynccontextmanager
@@ -85,18 +90,25 @@ async def _serve() -> int:
             col = Collector(api, keeper, _db, settings, vin["value"])
             collector_task.append(asyncio.create_task(
                 col.run_forever(), name="collector"))
-            log_info = f"collector started vin={vin['value']}"
-            logging.getLogger(__name__).info(log_info)
+            logging.getLogger(__name__).info(
+                "collector started vin=%s", vin["value"])
         else:
             logging.getLogger(__name__).warning(
                 "collector 未启动（vin=%s state=%s）",
                 vin["value"] if vin else "未配置", keeper.state)
-        yield
+        # MCP session manager（挂载子应用的 lifespan 由这里驱动）
+        mcp = getattr(_app.state, "mcp", None)
+        if mcp:
+            async with mcp.session_manager.run():
+                yield
+        else:
+            yield
         for t in collector_task:
             t.cancel()
         await keeper.stop()
 
-    app = create_app(settings, keeper_ref, lifespan)
+    app = create_app(settings, keeper_ref, lifespan, db=_db,
+                     vin=_vin_of(_db))
     config = uvicorn.Config(app, host=settings.host, port=settings.port,
                             log_level="info")
     server = uvicorn.Server(config)

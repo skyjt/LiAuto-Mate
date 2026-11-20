@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}设置 · LiAuto-Mate{% endblock %}
+{% block content %}
+<div class="grid">
+  <div class="card">
+    <h3>会话</h3>
+    {% if keeper %}
+    <div class="kv"><span class="muted">状态</span><b>{{ keeper.state }}</b></div>
+    <div class="kv"><span class="muted">主 Bearer</span><b>{{ '有' if keeper.has_bearer else '无' }}</b></div>
+    <div class="kv"><span class="muted">refresh_token</span><b>{{ '有' if keeper.has_refresh else '无' }}</b></div>
+    <div class="kv"><span class="muted">登录 cookie</span><b>{{ '有' if keeper.has_cookies else '无' }}</b></div>
+    {% if keeper.last_error %}
+    <div class="kv"><span class="muted">最近错误</span><b class="muted">{{ keeper.last_error[:80] }}</b></div>
+    {% endif %}
+    {% else %}<p class="muted">未启动</p>{% endif %}
+  </div>
+  <div class="card">
+    <h3>采集配置（env 可调）</h3>
+    <div class="kv"><span class="muted">实时批</span><b>{{ s.poll_realtime }}s</b></div>
+    <div class="kv"><span class="muted">行驶定位</span><b>{{ s.poll_drive_loc }}s</b></div>
+    <div class="kv"><span class="muted">充电采样</span><b>{{ s.poll_charge }}s</b></div>
+    <div class="kv"><span class="muted">休眠探测</span><b>{{ s.poll_sleep_probe }}s</b></div>
+    <div class="kv"><span class="muted">配置档</span><b>{{ s.poll_config }}s</b></div>
+    <div class="kv"><span class="muted">历史保留</span><b>{{ s.retention_days }} 天</b></div>
+  </div>
+  <div class="card">
+    <h3>数据</h3>
+    <div class="kv"><span class="muted">latest 路径</span><b>{{ n_latest }}</b></div>
+    <div class="kv"><span class="muted">history 行</span><b>{{ n_hist }}</b></div>
+    <div class="kv"><span class="muted">MCP</span>
+      <b>{{ '已启用' if s.mcp_token else '未设置 token（关闭）' }}</b></div>
+    <div class="kv"><span class="muted">地图 provider</span>
+      <b>{{ '高德 JS API' if s.amap_key else '高德瓦片直连' }}{% if s.map_provider == 'osm' %}（强制 OSM）{% endif %}</b></div>
+  </div>
+</div>
+{% endblock %}

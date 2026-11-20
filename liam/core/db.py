@@ -197,6 +197,17 @@ class Database:
         with self._lock, self._conn:
             self._conn.execute(sql, params)
 
+    def insert(self, sql: str, params: tuple = ()) -> int:
+        """单行插入（自动提交）→ 返回 lastrowid。
+
+        ★ sessionizer 开会话用——勿用裸 _conn.execute（绕过 commit，
+        进程退出未提交会回滚，实测踩坑：states 有 driving 但
+        drive_sessions=0）。
+        """
+        with self._lock, self._conn:
+            cur = self._conn.execute(sql, params)
+            return cur.lastrowid or 0
+
     def executemany(self, sql: str, rows: list[tuple]) -> None:
         """多行写入（单事务）：latest upsert + history insert 原子落库。"""
         with self._lock, self._conn:

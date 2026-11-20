@@ -118,6 +118,11 @@ class Collector:
         state = self.sm.update(vs)
         if state != prev_state:
             await self.sessionizer.on_state_change(prev_state, state, merged)
+        elif ((state == S_DRIVING and self.sessionizer._drive_id is None)
+              or (state == S_CHARGING and self.sessionizer._charge_id is None)):
+            # ★ 重启自愈：状态从 DB 恢复（如 driving）但会话未开——补开
+            #（之前部分丢失，会话起点记为当前时间——诚实处理）
+            await self.sessionizer.on_state_change("", state, merged)
         changes = self._ingest(merged, "T1")
         # 更新 ts 水位
         for dp in merged.values():

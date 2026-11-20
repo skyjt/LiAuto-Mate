@@ -1,0 +1,229 @@
+"""MCP 服务器（M4，方案 §8.3）：/mcp 只读 12 工具，Agent 获取车辆信息。
+
+  · streamable HTTP 挂同一 FastAPI（单容器单端口不变）
+  · LIAM_MCP_TOKEN Bearer 必需（未设=整体关闭，由 app 装配判断）
+  · 全部只读；返回带 数值+单位+车端 ts+stale 标志（Agent 必须能判断
+    「车辆休眠中，数据截至 xx:xx」）；手机号/凭据永不出现
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+
+from .config import Settings
+from .core.db import Database
+
+from mcp.server.fastmcp import FastMCP
+
+
+def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
+              settings: Settings) -> None:
+    """构建 MCP Starlette 子应用并挂载到 FastAPI /mcp。"""
+    mcp = FastMCP(
+        "liauto-mate",
+        instructions="Li Auto (理想) vehicle data. All tools read-only. "
+                      "Values carry unit + vehicle timestamp + stale flag; "
+                      "stale=true means the car is asleep/offline and data "
+                      "is last-known.",
+        streamable_http_path="/",   # 挂载点 /mcp 由外层 FastAPI mount 提供
+    )
+
+    def _ps(v_json: str | None) -> Any:
+        if v_json is None:
+            return None
+        v = json.loads(v_json)
+        if isinstance(v, str) and v[:1] in "{[":
+            try:
+                return json.loads(v)
+            except ValueError:
+                return v
+        return v
+
+    def _latest(path: str) -> Any:
+        r = db.query_one(
+            "SELECT value_json, ts_ms, ingested_at_ms FROM state_latest "
+            "WHERE vin=? AND path=?", (vin, path))
+        return r
+
+    def _num_of(path: str) -> tuple[Any, int | None, bool]:
+        r = _latest(path)
+        if not r:
+            return None, None, True
+        stale = (time.time() * 1000 - (r["ingested_at_ms"] or 0)) > 20 * 60 * 1000
+        return _ps(r["value_json"]), r["ts_ms"], stale
+
+    # ------------------------------------------------------------------
+    @mcp.tool()
+    def get_vehicle_status() -> dict:
+        """实时快照：状态徽章/SOC/续航/位置+速度/门锁/胎压/温度/充电功率。"""
+        online, _, _ = _num_of("Vehicle.ConnectManager.ConnectStatus.5G")
+        soc, soc_ts, soc_stale = _num_of(
+            "Vehicle.Powertrain.Battery.ResidueBattery")
+        loc, loc_ts, _ = _num_of("Vehicle.Location.CurrentLocationInfo")
+        st = db.query_one(
+            "SELECT state, start_ms FROM states WHERE vin=? AND end_ms IS NULL",
+            (vin,))
+        power, _, _ = _num_of("Vehicle.Powertrain.Battery.CLTCChargePower")
+        out = {
+            "state": st["state"] if st else "unknown",
+            "online": bool(online),
+            "soc_percent": soc, "soc_ts": soc_ts, "soc_stale": soc_stale,
+            "location": loc if isinstance(loc, dict) else None,
+            "charge_power_kw": power,
+            "doors_locked": _num_of(
+                "Vehicle.Body.DoorLockStatus.MainDoor")[0] not in (0, None, False),
+        }
+        for k, p in (("range_elec_km", "Vehicle.Cabin.CLTC.PureElecEnduranceMileInd"),
+                     ("range_fuel_km", "Vehicle.Cabin.CLTC.FuelEnduranceMileInd"),
+                     ("cabin_temp_c", "Vehicle.Cabin.AC.FrtACIncarTemp"),
+                     ("outside_temp_c", "Vehicle.VehInfo.CarControl.Hvac.DspOtsdTemp"),
+                     ("sentry_on", "Vehicle.Sentry.SentinelStatus")):
+            v, ts, stale = _num_of(p)
+            out[k] = {"value": v, "ts": ts, "stale": stale}
+        return out
+
+    @mcp.tool()
+    def get_state_group(prefix: str) -> dict:
+        """按前缀分组查状态（如 'Vehicle.Chassis.Tire' / 'Vehicle.Cabin.AC'）。
+
+        返回该前缀下全部路径的 {value, ts, stale}。
+        """
+        rows = db.query_all(
+            "SELECT path, value_json, ts_ms, ingested_at_ms FROM state_latest "
+            "WHERE vin=? AND path LIKE ?", (vin, prefix + "%"))
+        out = {}
+        for r in rows:
+            stale = (time.time() * 1000 - (r["ingested_at_ms"] or 0)) > 20 * 60 * 1000
+            out[r["path"]] = {"value": _ps(r["value_json"]),
+                              "ts": r["ts_ms"], "stale": stale}
+        return out
+
+    @mcp.tool()
+    def get_signal_history(path: str, hours: int = 24, limit: int = 500) -> dict:
+        """任意 VSS 路径的历史时序（change-only，本地采集）。"""
+        since = int(time.time() * 1000) - hours * 3600 * 1000
+        rows = db.query_all(
+            "SELECT ts_ms, ingested_at_ms, value_json FROM state_history "
+            "WHERE vin=? AND path=? AND ingested_at_ms>? "
+            "ORDER BY ingested_at_ms LIMIT ?", (vin, path, since, limit))
+        return {"path": path, "points": [
+            {"t": r["ingested_at_ms"], "v": _ps(r["value_json"])} for r in rows]}
+
+    @mcp.tool()
+    def get_drive_sessions(limit: int = 20) -> list:
+        """行车会话列表（本地推导：起止/里程/时长/均速/起终点命名）。"""
+        rows = db.query_all(
+            "SELECT * FROM drive_sessions WHERE vin=? ORDER BY start_ms DESC "
+            "LIMIT ?", (vin, limit))
+        return [dict(r) for r in rows]
+
+    @mcp.tool()
+    def get_drive_route(session_id: int) -> list:
+        """单次行车轨迹点序列（WGS-84，lat/lon/spd/dir/alt）。"""
+        rows = db.query_all(
+            "SELECT ts_ms, lat, lon, spd, dir, alt FROM positions "
+            "WHERE drive_session_id=? ORDER BY ts_ms", (session_id,))
+        return [dict(r) for r in rows]
+
+    @mcp.tool()
+    def get_charge_sessions(limit: int = 20) -> list:
+        """充电会话列表（本地推导：起止 SOC/峰值功率/地点）。"""
+        rows = db.query_all(
+            "SELECT * FROM charge_sessions WHERE vin=? ORDER BY start_ms DESC "
+            "LIMIT ?", (vin, limit))
+        return [dict(r) for r in rows]
+
+    @mcp.tool()
+    def get_charge_records_cloud(limit: int = 50) -> list:
+        """云端充电记录（可回填历史，含充电类型）。"""
+        rows = db.query_all(
+            "SELECT record_id, start_ms, end_ms, energy_kwh, charging_type "
+            "FROM charge_records_cloud WHERE vin=? ORDER BY start_ms DESC "
+            "LIMIT ?", (vin, limit))
+        return [dict(r) for r in rows]
+
+    @mcp.tool()
+    def get_efficiency_stats() -> list:
+        """月度里程（云端口径，travel_daily 月度键 YYYY-MM）。"""
+        rows = db.query_all(
+            "SELECT date, mileage_km, energy_kwh FROM travel_daily "
+            "WHERE vin=? AND date LIKE '20%' ORDER BY date", (vin,))
+        return [dict(r) for r in rows]
+
+    @mcp.tool()
+    def get_geofences() -> list:
+        """常去地点（用户命名，如「家」「公司」）。"""
+        rows = db.query_all(
+            "SELECT name, lat, lon, radius_m FROM geofences")
+        return [dict(r) for r in rows]
+
+    @mcp.tool()
+    def get_states_timeline(hours: int = 48) -> list:
+        """车辆状态时间线（driving/charging/parked/asleep 区段）。"""
+        since = int(time.time() * 1000) - hours * 3600 * 1000
+        rows = db.query_all(
+            "SELECT state, start_ms, end_ms FROM states WHERE vin=? "
+            "AND (end_ms IS NULL OR end_ms>?) ORDER BY start_ms",
+            (vin, since))
+        return [dict(r) for r in rows]
+
+    @mcp.tool()
+    def get_battery_health() -> dict:
+        """宏观电池健康：SOC 分布（近 30 天充电深度）+ 月度充电统计。"""
+        since = int(time.time() * 1000) - 30 * 24 * 3600 * 1000
+        rows = db.query_all(
+            "SELECT value_json FROM state_history WHERE vin=? AND path=? "
+            "AND ingested_at_ms>? ORDER BY ingested_at_ms",
+            (vin, "Vehicle.Powertrain.Battery.ResidueBattery", since))
+        socs = []
+        for r in rows:
+            try:
+                socs.append(float(_ps(r["value_json"])))
+            except (TypeError, ValueError):
+                pass
+        buckets = {"0-20": 0, "20-40": 0, "40-60": 0, "60-80": 0, "80-100": 0}
+        for s in socs:
+            k = f"{min(int(s // 20) * 20, 80)}-{min(int(s // 20) * 20 + 20, 100)}"
+            buckets[k] = buckets.get(k, 0) + 1
+        months = db.query_all(
+            "SELECT date, mileage_km FROM travel_daily WHERE vin=? "
+            "AND date LIKE '20%' ORDER BY date DESC LIMIT 12", (vin,))
+        return {"soc_samples_30d": len(socs), "soc_distribution": buckets,
+                "monthly_mileage_km": [dict(r) for r in months]}
+
+    @mcp.tool()
+    def get_system_health() -> dict:
+        """采集器/会话状态/重登倒计时/最近错误。"""
+        keeper = keeper_ref.get("keeper")
+        total = db.query_one("SELECT COUNT(*) c FROM collector_log")["c"]
+        ok = db.query_one("SELECT COUNT(*) c FROM collector_log WHERE ok=1")["c"]
+        return {
+            "session": keeper.status() if keeper else None,
+            "poll_total": total, "poll_ok": ok,
+            "success_rate": round(ok / total * 100, 2) if total else None,
+        }
+
+    # ------------------------------------------------------------------
+    # 挂载：标准 FastAPI mount（子应用内部路由已改为 "/"）
+    #      + Bearer 认证中间件（子应用层，先于路由）
+    # ------------------------------------------------------------------
+    sub = mcp.streamable_http_app()
+    token = settings.mcp_token
+
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse
+
+    class BearerGate(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            auth = request.headers.get("authorization", "")
+            if auth != f"Bearer {token}":
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
+            return await call_next(request)
+
+    sub.add_middleware(BearerGate)
+    app.mount("/mcp", sub, name="mcp")
+    # ★ mount 的子应用 lifespan 不会自动运行——session_manager.run()
+    #   必须由宿主 lifespan 驱动（cli.serve 已对接 app.state.mcp）
+    app.state.mcp = mcp

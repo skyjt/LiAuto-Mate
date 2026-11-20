@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}行程 · LiAuto-Mate{% endblock %}
+{% block content %}
+<div class="card">
+  <h3>行车会话（本地推导）</h3>
+  {% if sessions %}
+  <table>
+    <tr><th>开始</th><th>结束</th><th>里程</th><th>时长</th><th>均速</th><th>起 → 终</th><th></th></tr>
+    {% for s in sessions %}
+    <tr>
+      <td>{{ s.start_ms | ctime }}</td>
+      <td>{{ s.end_ms | ctime if s.end_ms else '进行中' }}</td>
+      <td>{{ (s.distance_m / 1000) | round(2) if s.distance_m is not none else '—' }} km</td>
+      <td>{{ (s.duration_s / 60) | round(0) if s.duration_s else '—' }} min</td>
+      <td>{{ s.avg_speed_kmh | round(1) if s.avg_speed_kmh else '—' }}</td>
+      <td>{{ s.start_geofence or '?' }} → {{ s.end_geofence or '?' }}</td>
+      <td><a href="#" onclick="showRoute({{ s.id }});return false">轨迹</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">暂无行车会话——开一圈车后自动生成。</p>{% endif %}
+</div>
+<div class="card" style="margin-top:14px; display:none" id="route-card">
+  <h3>轨迹（高德底图 · WGS-84→GCJ-02 展示层转换）</h3>
+  <div id="map"></div>
+</div>
+<script>
+async function showRoute(id) {
+  document.getElementById('route-card').style.display = 'block';
+  const pts = await (await fetch('/api/v1/positions.json?session_id=' + id)).json();
+  if (!window._map) {
+    // 高德栅格瓦片（免 key 直连，方案 §8.1.1 默认 provider）
+    window._map = L.map('map');
+    L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+      { subdomains: '1234', maxZoom: 18 }).addTo(window._map);
+  }
+  if (window._line) window._map.removeLayer(window._line);
+  const line = pts.map(p => wgs2gcj(p.lat, p.lon));
+  if (!line.length) return;
+  window._line = L.polyline(line, {color: '#4f9cf9', weight: 4}).addTo(window._map);
+  window._map.fitBounds(window._line.getBounds().pad(0.2));
+}
+</script>
+{% endblock %}
