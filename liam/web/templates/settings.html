@@ -43,6 +43,22 @@
 </div>
 
 <div class="card" style="margin-top:14px">
+  <h3>车辆维护（VSS 快照 · OTA/保养走 T3 慢档每日采集）</h3>
+  {% if ota_version %}
+  <div class="kv"><span class="muted">当前版本</span><b>{{ ota_version }}</b></div>
+  {% else %}<p class="muted">OTA 待 T3 采集（24h 内）。</p>{% endif %}
+  {% if maint %}
+  <table style="margin-top:8px">
+    <tr><th>保养项</th><th>状态</th></tr>
+    {% for m in maint %}
+    <tr><td>{{ m.item }}</td>
+        <td class="muted">{{ m.value if m.value is not none else '—' }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">保养计划待 T3 采集。</p>{% endif %}
+</div>
+
+<div class="card" style="margin-top:14px">
   <h3>常去地点（geofence —— 会话自动命名「家 → 公司」）</h3>
   {% if geofences %}
   <table>
@@ -63,10 +79,10 @@
     {% endfor %}
   </table>
   {% else %}<p class="muted">还没有命名地点——加一个「家」试试（在概览页复制当前坐标）。</p>{% endif %}
-  <form method="post" action="/settings/geofence/add" style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap">
-    <input name="name" placeholder="名称（如：家）" required>
-    <input name="lat" placeholder="纬度" required style="width:110px">
-    <input name="lon" placeholder="经度" required style="width:110px">
+  <form method="post" action="/settings/geofence/add" style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap" id="geo">
+    <input name="name" placeholder="名称（如：家）" required value="{{ pre_name }}" id="geo-name">
+    <input name="lat" placeholder="纬度" required style="width:110px" value="{{ pre_lat }}">
+    <input name="lon" placeholder="经度" required style="width:110px" value="{{ pre_lon }}">
     <input name="radius" placeholder="半径 m" value="100" style="width:90px">
     <button>添加</button>
   </form>

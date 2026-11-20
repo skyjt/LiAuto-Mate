@@ -21,7 +21,7 @@ from ..auth.li_api import AuthExpiredError, LiApi, LiApiError
 from ..auth.session_keeper import SessionKeeper
 from ..config import Settings
 from ..core.db import Database
-from .paths import T0_PROBE_PATHS, T1_LOC_PATHS, T2_PATHS, T1_PATHS, batched
+from .paths import T0_PROBE_PATHS, T1_LOC_PATHS, T2_PATHS, T3_PATHS, T1_PATHS, batched
 from .sessionizer import Sessionizer
 from .state_machine import (
     S_ASLEEP,
@@ -48,10 +48,12 @@ class Collector:
         self.sessionizer = Sessionizer(db, vin, battery_kwh=settings.battery_kwh)
         self.t1_batches = batched(T1_PATHS)
         self.t2_batches = batched(T2_PATHS)
+        self.t3_batches = batched(T3_PATHS)
         self.loc_batch = T1_LOC_PATHS
         self.probe_batch = T0_PROBE_PATHS
         self._consec_fail = 0
         self._t2_last = 0.0
+        self._t3_last = 0.0
         self._prev_max_ts: int | None = None
 
     # ------------------------------------------------------------------
@@ -156,9 +158,13 @@ class Collector:
         return None
 
     async def poll_config(self) -> None:
-        """T2 配置档（1h）：与状态无关。"""
+        """T2 配置档（1h）+ T3 慢档（24h）：与状态无关。"""
         merged = await self._fetch_multi(self.t2_batches)
         self._ingest(merged, "T2")
+        if time.time() - self._t3_last >= 24 * 3600:
+            merged3 = await self._fetch_multi(self.t3_batches)
+            self._ingest(merged3, "T3")
+            self._t3_last = time.time()
 
     # ------------------------------------------------------------------
     # 主循环

@@ -33,7 +33,12 @@ class CloudSync:
     # ------------------------------------------------------------------
 
     async def sync_all(self) -> dict[str, Any]:
-        """全量同步（T4 / 手动）。返回各端点结果摘要。"""
+        """全量同步（T4 / 手动）。返回各端点结果摘要。
+
+        ★ 实测边界（11-20）：ota/upgrade 与 maint/plan 端点 livis 通道
+        无权限（100012 没有接口访问权限——ha-lixiang 也只登记常量从未
+        调用）——OTA/保养信息改走 VSS 路径（paths.T3 档），不走云端。
+        """
         out: dict[str, Any] = {}
         out["travel_daily"] = await self._sync_travel_daily()
         out["charge_records"] = await self._sync_charge_records()
@@ -117,6 +122,61 @@ class CloudSync:
                 break
             page += 1
         log.info("charge_records 同步 %d 条", n)
+        return n
+
+    # ------------------------------------------------------------------
+    async def _sync_ota(self) -> int:
+        """OTA 状态镜像（单行 upsert；字段首验后细化，raw 全存）。"""
+        data = await self.api.get_ota_upgrade()
+        now = int(time.time() * 1000)
+        version = None
+        status = None
+        if isinstance(data, dict):
+            version = (data.get("version") or data.get("currentVersion")
+                       or (data.get("upgradeInfo") or {}).get("version"))
+            status = (data.get("status") or data.get("upgradeStatus"))
+        self.db.execute(
+            "INSERT INTO ota_updates(vin, version, status, raw_json, synced_at_ms) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(vin) DO UPDATE SET "
+            "version=excluded.version, status=excluded.status, "
+            "raw_json=excluded.raw_json, synced_at_ms=excluded.synced_at_ms",
+            (self.vin, str(version) if version else None,
+             str(status) if status else None,
+             json.dumps(data, ensure_ascii=False) if data is not None else None,
+             now))
+        log.info("OTA 同步: version=%s status=%s", version, status)
+        return 1
+
+    async def _sync_maint(self) -> int:
+        """保养计划镜像（按保养项 upsert；响应结构首验后细化）。"""
+        data = await self.api.get_maint_plan()
+        now = int(time.time() * 1000)
+        n = 0
+        items = _iter_items(data)
+        if not items and isinstance(data, dict):
+            items = [data]           # 单对象响应也存一行（item_key='__all'）
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            key = (item.get("key") or item.get("name")
+                   or item.get("type") or "__all")
+            self.db.execute(
+                "INSERT INTO maintenance_plan(vin, item_key, raw_json, synced_at_ms) "
+                "VALUES(?,?,?,?) ON CONFLICT(vin, item_key) DO UPDATE SET "
+                "raw_json=excluded.raw_json, synced_at_ms=excluded.synced_at_ms",
+                (self.vin, str(key),
+                 json.dumps(item, ensure_ascii=False), now))
+            n += 1
+        if not n:
+            self.db.execute(
+                "INSERT INTO maintenance_plan(vin, item_key, raw_json, synced_at_ms) "
+                "VALUES(?,?,?,?) ON CONFLICT(vin, item_key) DO UPDATE SET "
+                "raw_json=excluded.raw_json, synced_at_ms=excluded.synced_at_ms",
+                (self.vin, "__raw",
+                 json.dumps(data, ensure_ascii=False) if data is not None else None,
+                 now))
+            n = 1
+        log.info("保养计划同步 %d 项", n)
         return n
 
     # ------------------------------------------------------------------

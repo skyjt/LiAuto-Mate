@@ -33,3 +33,6 @@ EP_TRAVEL_MONTHLY = "/ssp-travel-x-service/v1-0/travel/monthly/{year}/{month}/{v
 EP_TRAVEL_DAILY = "/ssp-travel-x-service/v1-0/travel/daily/aggregate/{vin}"
 EP_TRAVEL_ALL = "/ssp-travel-x-service/v1-0/travel/all/aggregate/{vin}"
 EP_CHARGE_RECORDS = "/bsp-vcp-message/v1/app/vehicle/chargeRecords"
+EP_OTA_UPGRADE = "/ssp-as-mobile-api/v1-0/vehicles/ota/upgrade?vin={vin}"
+EP_MAINT_PLAN = "/ssp-as-mobile-api/v1-0/vehicles/maint/plan/{vin}"
+EP_TIRE_ALARM = "/ssp-as-mobile-api/v1-0/vehicles/tire/alarm/{vin}"

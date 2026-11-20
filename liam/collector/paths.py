@@ -108,6 +108,31 @@ T1_PATHS: list[str] = [
     "Vehicle.Body.Light.LicLghtSts",
 ]
 
+# ---------------------------------------------------------------- T3（慢档，24h）
+# ★ 实测修正 11-20：云端 ota/upgrade 与 maint/plan 端点 livis 无权限
+#   （100012）——OTA/保养信息改从 VSS 路径拿（169 实测清单内）
+T3_PATHS: list[str] = [
+    "Vehicle.OTA.Upgrade.UpgradeState",
+    "Vehicle.OTA.Upgrade.UpgradeStatus",
+    "Vehicle.OTA.Upgrade.UpgradeProgress",
+    "Vehicle.OTA.Upgrade.UpgradeTime",
+    "Vehicle.Version.OTA.Baseline",
+    "Vehicle.Version.OTA.displayedBaseline",
+    "Vehicle.Carcenter.Maintain.Config",
+    "Vehicle.Carcenter.Maintain.acfilter",
+    "Vehicle.Carcenter.Maintain.coolfuild",
+    "Vehicle.Carcenter.Maintain.enginelevel1",
+    "Vehicle.Carcenter.Maintain.enginelevel2",
+    "Vehicle.Carcenter.Maintain.gearbrakeoil",
+    "Vehicle.Carcenter.Maintain.sparkplug",
+    "Vehicle.Carcenter.Aftersales.acfilter",
+    "Vehicle.Carcenter.Aftersales.coolfuild",
+    "Vehicle.Carcenter.Aftersales.enginelevel1",
+    "Vehicle.Carcenter.Aftersales.enginelevel2",
+    "Vehicle.Carcenter.Aftersales.gearbrakeoil",
+    "Vehicle.Carcenter.Aftersales.sparkplug",
+]
+
 # ---------------------------------------------------------------- T2（配置档，1h）
 T2_PATHS: list[str] = [
     "Vehicle.CarSettings.Privacy.PosService",

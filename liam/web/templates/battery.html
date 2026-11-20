@@ -49,4 +49,34 @@
   });
 })();
 </script>
+<div class="card" style="margin-top:14px">
+  <h3>幽灵功耗（静置电耗 · 近 30 天停车段）</h3>
+  <div id="vamp"></div>
+</div>
+<script>
+(async () => {
+  const rows = await (await fetch('/api/v1/vampire-drain.json?days=30')).json();
+  const el = document.getElementById('vamp');
+  if (!rows.length) {
+    el.innerHTML = '<p class="muted">暂无有效停车段数据——积累几天后自动出现。</p>';
+    return;
+  }
+  let html = '<table><tr><th>停车开始</th><th>时长</th><th>SOC 掉幅</th><th>损失电量</th><th>平均功耗</th></tr>';
+  for (const r of rows.slice(0, 15)) {
+    const t = new Date(r.start_ms);
+    const hh = String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
+    const d = String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
+    html += `<tr><td>${d} ${hh}</td><td>${r.hours}h</td><td>-${r.soc_drop_pct}%</td>`
+        + `<td>${r.kwh_lost} kWh</td><td>${(r.avg_kw * 1000).toFixed(0)} W</td></tr>`;
+  }
+  html += '</table>';
+  const valid = rows.filter(r => r.hours >= 3);
+  if (valid.length) {
+    const avg = valid.reduce((s, r) => s + r.avg_kw, 0) / valid.length;
+    html += `<p class="muted" style="margin-top:8px">≥3h 停车段平均功耗 ≈ `
+        + `${(avg * 1000).toFixed(0)} W</p>`;
+  }
+  el.innerHTML = html;
+})();
+</script>
 {% endblock %}

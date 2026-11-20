@@ -34,11 +34,40 @@
   </div>
 </div>
 
+<div class="card" style="margin-top:14px">
+  <h3>常去地点（自动统计 · 近 30 天停车高频点）</h3>
+  <div id="visited"></div>
+</div>
+
 <div class="card" style="margin-top:14px; display:none" id="route-card">
   <h3>轨迹（高德底图 · WGS-84→GCJ-02 展示层转换）</h3>
   <div id="map"></div>
 </div>
 <script>
+(async () => {
+  const rows = await (await fetch('/api/v1/visited.json?days=30')).json();
+  const el = document.getElementById('visited');
+  if (!rows.length) {
+    el.innerHTML = '<p class="muted">暂无统计——停车几次后自动出现。</p>';
+    return;
+  }
+  let html = '<table><tr><th>地点</th><th>停留次数</th><th>最近</th><th>坐标</th><th></th></tr>';
+  for (const r of rows) {
+    const t = new Date(r.last_ms);
+    const d = String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
+    html += `<tr><td>${r.name || '未命名'}</td><td>${r.n} 次</td><td>${d}</td>`
+        + `<td class="muted">${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}</td>`
+        + `<td><a href="#" onclick="fillFence('${(r.name || '').replace(/'/g, '')}', `
+        + `${r.lat}, ${r.lon});return false">命名为 geofence</a></td></tr>`;
+  }
+  el.innerHTML = html + '</table>';
+})();
+
+function fillFence(name, lat, lon) {
+  location.href = '/settings?name=' + encodeURIComponent(name)
+      + '&lat=' + lat + '&lon=' + lon + '#geo';
+}
+
 (async () => {
   const now = Date.now();
   const day_start = now - 24 * 3600 * 1000;

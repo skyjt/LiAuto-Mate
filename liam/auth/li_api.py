@@ -25,6 +25,9 @@ from .constants import (
     API_ID,
     AUD_VSS,
     EP_CHARGE_RECORDS,
+    EP_MAINT_PLAN,
+    EP_OTA_UPGRADE,
+    EP_TIRE_ALARM,
     EP_TOKEN,
     EP_TRAVEL_ALL,
     EP_TRAVEL_DAILY,
@@ -289,3 +292,15 @@ class LiApi:
     async def get_charge_records(self, page: int = 1, page_size: int = 50) -> Any:
         return await self._signed_get_travel(
             f"{EP_CHARGE_RECORDS}?vin={self.vin}&page={page}&pageSize={page_size}")
+
+    async def get_ota_upgrade(self) -> Any:
+        """OTA 升级状态/历史（ha-lixiang 已验端点；响应字段首验后修正）。"""
+        return await self._signed_get_travel(EP_OTA_UPGRADE.format(vin=self.vin))
+
+    async def get_maint_plan(self) -> Any:
+        """保养计划（里程/到期项）。"""
+        return await self._signed_get_travel(EP_MAINT_PLAN.format(vin=self.vin))
+
+    async def get_tire_alarm(self) -> Any:
+        """胎压告警历史。"""
+        return await self._signed_get_travel(EP_TIRE_ALARM.format(vin=self.vin))

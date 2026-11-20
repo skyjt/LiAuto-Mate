@@ -30,16 +30,12 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
         streamable_http_path="/",   # 挂载点 /mcp 由外层 FastAPI mount 提供
     )
 
-    def _ps(v_json: str | None) -> Any:
-        if v_json is None:
-            return None
-        v = json.loads(v_json)
-        if isinstance(v, str) and v[:1] in "{[":
-            try:
-                return json.loads(v)
-            except ValueError:
-                return v
-        return v
+    # ------------------------------------------------------------------
+    # 共享分析器（liam.collector.analysis，MCP 与 Web API 复用）
+    # ------------------------------------------------------------------
+    from ..collector.analysis import _ps, visited_places, vampire_drain
+
+    @mcp.tool()
 
     def _latest(path: str) -> Any:
         r = db.query_one(
@@ -192,6 +188,43 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
             "AND date LIKE '20%' ORDER BY date DESC LIMIT 12", (vin,))
         return {"soc_samples_30d": len(socs), "soc_distribution": buckets,
                 "monthly_mileage_km": [dict(r) for r in months]}
+
+    @mcp.tool()
+    def get_ota_updates() -> dict:
+        """OTA 版本/状态 + 保养计划（VSS 快照，T3 慢档每日采集）。
+
+        ★ 实测边界：云端 ssp-as-mobile-api 的 ota/maint 端点 livis 通道
+        无权限（100012）——数据源是 VSS 路径（Vehicle.OTA.* /
+        Vehicle.Carcenter.*），非云端接口。
+        """
+        def _snap(prefixes: tuple[str, ...]) -> dict:
+            out = {}
+            for pfx in prefixes:
+                rows = db.query_all(
+                    "SELECT path, value_json, ts_ms FROM state_latest "
+                    "WHERE vin=? AND path LIKE ?", (vin, pfx + "%"))
+                for r in rows:
+                    out[r["path"]] = {
+                        "value": _ps(r["value_json"]), "ts": r["ts_ms"]}
+            return out
+        return {
+            "ota": _snap(("Vehicle.OTA.", "Vehicle.Version.OTA.")),
+            "maintenance": _snap(("Vehicle.Carcenter.Maintain.",
+                                  "Vehicle.Carcenter.Aftersales.")),
+        }
+
+    @mcp.tool()
+    def get_vampire_drain(days: int = 30) -> list:
+        """幽灵功耗（静置电耗）：停车段 SOC 下降 → 平均功耗 kW/段。
+
+        长时间停车（含休眠）数据可能因 VSS 停更而不完整——如实呈现。
+        """
+        return vampire_drain(db, vin, days, settings.battery_kwh)
+
+    @mcp.tool()
+    def get_visited_places(days: int = 30) -> list:
+        """常去地点（自动统计停车高频点，200m 聚类）。"""
+        return visited_places(db, vin, days)
 
     @mcp.tool()
     def get_system_health() -> dict:

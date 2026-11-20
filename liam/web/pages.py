@@ -156,17 +156,36 @@ async def page_battery(request: Request):
 
 
 @router.get("/settings", response_class=HTMLResponse)
-async def page_settings(request: Request):
+async def page_settings(request: Request, name: str = "", lat: str = "",
+                        lon: str = ""):
     settings: Settings = request.app.state.settings
     db: Database = request.app.state.db
     keeper = request.app.state.keeper_ref.get("keeper")
     n_latest = db.query_one("SELECT COUNT(*) c FROM state_latest")["c"]
     n_hist = db.query_one("SELECT COUNT(*) c FROM state_history")["c"]
     geofences = db.query_all("SELECT * FROM geofences ORDER BY name")
+    vin = request.app.state.vin
+    ota_rows = db.query_all(
+        "SELECT path, value_json FROM state_latest "
+        "WHERE vin=? AND (path LIKE 'Vehicle.OTA.%' "
+        "OR path LIKE 'Vehicle.Version.OTA%') ", (vin,))
+    maint_rows = db.query_all(
+        "SELECT path, value_json, ts_ms FROM state_latest "
+        "WHERE vin=? AND path LIKE 'Vehicle.Carcenter.Maintain.%'",
+        (vin,))
+    ota = {r["path"]: _ps(r["value_json"]) for r in ota_rows}
+    # 当前版本号嵌在 UpgradeProgress.currentVersion
+    prog = ota.get("Vehicle.OTA.Upgrade.UpgradeProgress")
+    ota_version = (prog.get("currentVersion") if isinstance(prog, dict)
+                   else None)
+    maint = [{"item": r["path"].split(".")[-1],
+              "value": _ps(r["value_json"])} for r in maint_rows]
     return await _page(
         request, "settings.html",
         s=settings, keeper=keeper.status() if keeper else None,
-        n_latest=n_latest, n_hist=n_hist, geofences=geofences)
+        n_latest=n_latest, n_hist=n_hist, geofences=geofences,
+        ota=ota, ota_version=ota_version, maint=maint,
+        pre_name=name, pre_lat=lat, pre_lon=lon)
 
 
 # ----------------------------------------------------------------------
@@ -350,3 +369,19 @@ async def api_soc_histogram(request: Request):
         except (TypeError, ValueError):
             pass
     return JSONResponse({"samples": n, "buckets": buckets})
+
+
+@router.get("/api/v1/vampire-drain.json")
+async def api_vampire_drain(request: Request, days: int = 30):
+    from ..collector.analysis import vampire_drain
+    settings: Settings = request.app.state.settings
+    db: Database = request.app.state.db
+    return JSONResponse(vampire_drain(
+        db, request.app.state.vin, days, settings.battery_kwh))
+
+
+@router.get("/api/v1/visited.json")
+async def api_visited(request: Request, days: int = 30):
+    from ..collector.analysis import visited_places
+    db: Database = request.app.state.db
+    return JSONResponse(visited_places(db, request.app.state.vin, days))

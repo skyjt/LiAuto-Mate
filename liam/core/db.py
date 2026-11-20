@@ -181,6 +181,30 @@ CREATE TABLE IF NOT EXISTS drive_soc_marks (
 
 USER_VERSION = 5
 
+# M6-info-2 增补：OTA / 保养 / 幽灵功耗 / 常去地点
+_SCHEMA_M6B = """
+CREATE TABLE IF NOT EXISTS ota_updates (
+    vin TEXT NOT NULL,
+    version TEXT,
+    status TEXT,
+    raw_json TEXT,
+    synced_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (vin)
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_plan (
+    vin TEXT NOT NULL,
+    item_key TEXT NOT NULL,           -- 保养项（ha-lixiang 实测键：acfilter/
+                                      -- coolfuild/enginelevel1/2/gearbrakeoil/
+                                      -- sparkplug）
+    raw_json TEXT,
+    synced_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (vin, item_key)
+);
+"""
+
+USER_VERSION = 6
+
 
 class Database:
     """单连接 + 线程锁：单写者模型，M0 够用；M1 起采集在后台线程复用。"""
@@ -207,6 +231,8 @@ class Database:
                 self._conn.executescript(_SCHEMA_M3)
             if v < 5:
                 self._conn.executescript(_SCHEMA_M6)
+            if v < 6:
+                self._conn.executescript(_SCHEMA_M6B)
             if v < USER_VERSION:
                 self._conn.execute(f"PRAGMA user_version = {USER_VERSION}")
 
