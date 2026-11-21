@@ -35,3 +35,9 @@ htmlcov/
 *.log
 .idea/
 .vscode/
+
+# spike 运行产物（脚本已脱敏入库；登录态/截图/验证码永不入库）
+spike/session.json
+spike/login_state.*
+spike/shot_*.png
+spike/sms_code.txt
