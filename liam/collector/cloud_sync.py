@@ -100,22 +100,26 @@ class CloudSync:
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                rid = (item.get("id") or item.get("recordId")
-                       or item.get("chargeId"))
-                if not rid:
-                    # 无 ID 用时间戳兜底键
-                    rid = f"{item.get('startTime') or item.get('startTimeMs') or now}"
+                start = _field(item, "startTime", "startTimeMs")
+                rid = _field(item, "id", "recordId", "chargeId")
+                if rid is None:
+                    if start is None:
+                        continue  # 缺少记录 ID 与开始时间，无法识别重复记录
+                    rid = start
                 self.db.execute(
                     "INSERT INTO charge_records_cloud(vin,record_id,start_ms,"
                     "end_ms,energy_kwh,charging_type,raw_json,synced_at_ms) "
                     "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(record_id) DO UPDATE SET "
-                    "raw_json=excluded.raw_json, synced_at_ms=excluded.synced_at_ms",
+                    "start_ms=COALESCE(excluded.start_ms, start_ms), "
+                    "end_ms=COALESCE(excluded.end_ms, end_ms), "
+                    "energy_kwh=COALESCE(excluded.energy_kwh, energy_kwh), "
+                    "charging_type=COALESCE(excluded.charging_type, charging_type), "
+                    "raw_json=excluded.raw_json, synced_at_ms=excluded.synced_at_ms "
+                    "WHERE charge_records_cloud.vin=excluded.vin",
                     (self.vin, str(rid),
-                     _ms(item.get("startTime") or item.get("startTimeMs")),
-                     _ms(item.get("endTime") or item.get("endTimeMs")),
-                     _f(item.get("chargingCapacity") or item.get("capacity")
-                        or item.get("electricity")),
-                     item.get("chargingType") or item.get("type"),
+                     _ms(start), _ms(_field(item, "endTime", "endTimeMs")),
+                     _f(_field(item, "chargingCapacity", "capacity", "electricity")),
+                     _field(item, "chargingType", "type"),
                      json.dumps(item, ensure_ascii=False), now))
                 n += 1
             if len(items) < 50:
@@ -191,8 +195,10 @@ class CloudSync:
                 await self.sync_all()
             except LiApiError as e:
                 log.warning("T4 云端同步失败（24h 后再试）: %s", e)
-            except AuthExpiredError:
-                log.warning("T4 跳过（会话需重登）")
+            except AuthExpiredError as exc:
+                if exc.need_relogin:
+                    raise
+                log.warning("T4 鉴权暂时受限，24h 后再试")
             try:
                 self._retention_sweep()
             except Exception as e:  # noqa: BLE001
@@ -210,6 +216,14 @@ class CloudSync:
             self.db.execute("PRAGMA incremental_vacuum")
             log.info("retention：清理 %d 行（> %d 天）", cur, days)
         return cur or 0
+
+
+def _field(item: dict, *names: str) -> Any:
+    for name in names:
+        value = item.get(name)
+        if value is not None and value != "":
+            return value
+    return None
 
 
 def _f(v: Any) -> float | None:

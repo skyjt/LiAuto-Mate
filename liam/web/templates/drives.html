@@ -1,113 +1,98 @@
 {% extends "base.html" %}
 {% block title %}行程 · LiAuto-Mate{% endblock %}
+{% block assets %}
+<link rel="stylesheet" href="/static/vendor/leaflet.css">
+<script src="/static/vendor/leaflet.js"></script>
+<script src="/static/js/gcj02.js"></script>
+{% endblock %}
 {% block content %}
-<div class="card">
-  <h3>行车会话（本地推导）</h3>
+<section class="card">
+  <h2>行车会话</h2>
   {% if sessions %}
-  <table>
-    <tr><th>开始</th><th>结束</th><th>里程</th><th>能耗</th><th>效率</th><th>均速</th><th>起 → 终</th><th></th></tr>
-    {% for s in sessions %}
-    <tr>
-      <td>{{ s.start_ms | ctime }}</td>
-      <td>{{ s.end_ms | ctime if s.end_ms else '进行中' }}</td>
-      <td>{{ (s.distance_m / 1000) | round(2) if s.distance_m is not none else '—' }} km</td>
-      <td>{{ s.energy_kwh if s.energy_kwh is not none else '—' }} kWh</td>
-      <td>{{ s.efficiency_kwh_100 if s.efficiency_kwh_100 is not none else '—' }}</td>
-      <td>{{ s.avg_speed_kmh | round(1) if s.avg_speed_kmh else '—' }}</td>
-      <td>{{ s.start_geofence or '?' }} → {{ s.end_geofence or '?' }}</td>
-      <td><a href="#" onclick="showRoute({{ s.id }});return false">轨迹</a></td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% else %}<p class="muted">暂无行车会话——开一圈车后自动生成。</p>{% endif %}
-</div>
-
-<div class="card" style="margin-top:14px">
-  <h3>近 24h 时间线</h3>
-  <div id="timeline" style="display:flex; height:34px; border-radius:6px; overflow:hidden;
-       background:var(--bg); border:1px solid var(--border)"></div>
-  <div style="display:flex; gap:14px; margin-top:8px; font-size:12px" class="muted">
-    <span><span style="color:var(--accent)">■</span> 行驶</span>
-    <span><span style="color:var(--ok)">■</span> 充电</span>
-    <span><span style="color:var(--warn)">■</span> 静止</span>
-    <span><span style="color:var(--muted)">■</span> 休眠</span>
-  </div>
-</div>
-
-<div class="card" style="margin-top:14px">
-  <h3>常去地点（自动统计 · 近 30 天停车高频点）</h3>
-  <div id="visited"></div>
-</div>
-
-<div class="card" style="margin-top:14px; display:none" id="route-card">
-  <h3>轨迹（高德底图 · WGS-84→GCJ-02 展示层转换）</h3>
-  <div id="map"></div>
-</div>
+  <p class="muted">里程、均速和百公里能耗按车辆 Trip 计数暂估，计数单位仍待实车核对。</p>
+  <div class="table-scroll sessions" role="region" aria-label="行车会话明细" tabindex="0"><table>
+    <thead><tr><th>开始</th><th>结束</th><th>里程 (km)</th><th>能耗 (kWh)</th><th>能耗率 (kWh/100 km)</th><th>均速 (km/h)</th><th>起点 → 终点</th><th>详情</th></tr></thead>
+    <tbody>{% for s in sessions %}
+    <tr><td>{{ s.start_ms | ctime }}</td><td>{{ s.end_ms | ctime if s.end_ms else '进行中' }}</td>
+      <td>{{ (s.distance_m / 1000) | round(2) if s.distance_m is not none else '—' }}</td>
+      <td>{{ s.energy_kwh if s.energy_kwh is not none else '—' }}</td>
+      <td>{{ (s.energy_kwh * 100000 / s.distance_m) | round(1) if s.energy_kwh is not none and s.distance_m and s.distance_m > 500 else '—' }}</td>
+      <td>{{ s.avg_speed_kmh | round(1) if s.avg_speed_kmh is not none else '—' }}</td>
+      <td>{{ s.start_geofence or '未知' }} → {{ s.end_geofence or '未知' }}</td>
+      <td><button type="button" data-route="{{ s.id }}" aria-controls="route-card">轨迹</button></td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="muted">暂无行车会话。采集到行驶状态后，这里会显示行程。</p>{% endif %}
+</section>
+<section class="card stack" id="route-card" hidden>
+  <h2 id="route-heading">行驶轨迹</h2>
+  <div id="route-info" role="status"></div><div id="map" hidden></div>
+  <p id="map-note" class="muted" role="status" hidden>部分底图未能加载，已采集的轨迹仍可查看。</p>
+</section>
+<section class="card stack">
+  <h2>近 24 小时状态</h2>
+  <div id="timeline"></div>
+  <div class="legend muted"><span>行驶</span><span>充电</span><span>停车在线</span><span>休眠</span></div>
+</section>
+<section class="card stack"><h2>常去地点 · 近 30 天</h2><div id="visited"></div></section>
 <script>
-(async () => {
-  const rows = await (await fetch('/api/v1/visited.json?days=30')).json();
-  const el = document.getElementById('visited');
-  if (!rows.length) {
-    el.innerHTML = '<p class="muted">暂无统计——停车几次后自动出现。</p>';
-    return;
-  }
-  let html = '<table><tr><th>地点</th><th>停留次数</th><th>最近</th><th>坐标</th><th></th></tr>';
+dashboard.load(document.getElementById('visited'), '/api/v1/visited.json?days=30', (rows, el) => {
+  if (!rows.length) return dashboard.message(el, '暂无可统计的停车地点。');
+  dashboard.table(el, ['地点','停留次数','最近停留','坐标','操作'], rows.map(r => {
+    const link = document.createElement('a');
+    link.textContent = '命名地点';
+    link.href = '/settings?' + new URLSearchParams({name:r.name || '', lat:r.lat, lon:r.lon}) + '#geo';
+    return [r.name || '未命名', r.n, new Date(r.last_ms).toLocaleDateString('zh-CN'),
+      r.lat.toFixed(5) + ', ' + r.lon.toFixed(5), link];
+  }));
+});
+dashboard.load(document.getElementById('timeline'), '/api/v1/states-timeline.json', (rows, el) => {
+  if (!rows.length) return dashboard.message(el, '近 24 小时没有状态记录。');
+  const track = document.createElement('div');
+  track.className = 'timeline';
+  const colors = {driving:'var(--accent)',charging:'var(--ok)',parked_awake:'var(--warn)',asleep:'var(--muted)'};
+  const names = {driving:'行驶', charging:'充电', parked_awake:'停车在线', asleep:'休眠'};
+  const now = Date.now(), day = 86400000, start = now - day;
   for (const r of rows) {
-    const t = new Date(r.last_ms);
-    const d = String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
-    html += `<tr><td>${r.name || '未命名'}</td><td>${r.n} 次</td><td>${d}</td>`
-        + `<td class="muted">${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}</td>`
-        + `<td><a href="#" onclick="fillFence('${(r.name || '').replace(/'/g, '')}', `
-        + `${r.lat}, ${r.lon});return false">命名为 geofence</a></td></tr>`;
+    const a = Math.max(start, r.start_ms), b = Math.min(now, r.end_ms ?? now);
+    if (b <= a) continue;
+    const part = document.createElement('span');
+    part.style.left = (a-start)/day*100 + '%';
+    part.style.width = (b-a)/day*100 + '%';
+    part.style.background = colors[r.state];
+    part.title = (names[r.state] || '未知') + ' · ' + Math.round((b-a)/60000) + ' 分钟';
+    part.setAttribute('aria-label', part.title);
+    track.append(part);
   }
-  el.innerHTML = html + '</table>';
-})();
-
-function fillFence(name, lat, lon) {
-  location.href = '/settings?name=' + encodeURIComponent(name)
-      + '&lat=' + lat + '&lon=' + lon + '#geo';
-}
-
-(async () => {
-  const now = Date.now();
-  const day_start = now - 24 * 3600 * 1000;
-  const tl = document.getElementById('timeline');
-  const colors = {driving: 'var(--accent)', charging: 'var(--ok)',
-                   parked_awake: 'var(--warn)', asleep: 'var(--muted)'};
-  const st = await (await fetch('/api/v1/states-timeline.json')).json();
-  let last_end = day_start, segs = [];
-  for (const s of st) {
-    const s0 = Math.max(s.start_ms || day_start, day_start);
-    const s1 = Math.min(s.end_ms || now, now);
-    if (s1 <= s0) continue;
-    if (s0 > last_end) segs.push(['', s0 - last_end]);
-    segs.push([s.state, s1 - s0]);
-    last_end = s1;
-  }
-  if (now > last_end) segs.push(['', now - last_end]);
-  const total = 24 * 3600 * 1000;
-  for (const [state, dur] of segs) {
-    const d = document.createElement('div');
-    d.style.width = (dur / total * 100) + '%';
-    d.style.background = colors[state] || 'transparent';
-    d.title = state;
-    tl.appendChild(d);
-  }
-})();
-
-async function showRoute(id) {
-  document.getElementById('route-card').style.display = 'block';
-  const pts = await (await fetch('/api/v1/positions.json?session_id=' + id)).json();
-  if (!window._map) {
-    window._map = L.map('map');
-    L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
-      { subdomains: '1234', maxZoom: 18 }).addTo(window._map);
-  }
-  if (window._line) window._map.removeLayer(window._line);
-  const line = pts.map(p => wgs2gcj(p.lat, p.lon));
-  if (!line.length) return;
-  window._line = L.polyline(line, {color: '#4f9cf9', weight: 4}).addTo(window._map);
-  window._map.fitBounds(window._line.getBounds().pad(0.2));
+  el.append(track);
+});
+let map, route;
+const mapEl = document.getElementById('map');
+for (const button of document.querySelectorAll('[data-route]')) {
+  button.addEventListener('click', () => {
+    const card = document.getElementById('route-card');
+    card.hidden = false;
+    card.scrollIntoView({block:'nearest'});
+    document.getElementById('route-heading').textContent = button.closest('tr').cells[0].textContent + ' · 行驶轨迹';
+    mapEl.hidden = true;
+    dashboard.load(document.getElementById('route-info'), '/api/v1/positions.json?session_id=' + button.dataset.route, (points, el) => {
+      if (!points.length) return dashboard.message(el, '这段行程没有定位采样。');
+      mapEl.hidden = false;
+      if (!map) {
+        map = L.map(mapEl);
+        L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {subdomains:'1234', maxZoom:18, attribution:'高德地图'})
+          .on('tileerror', () => { document.getElementById('map-note').hidden = false; })
+          .on('tileload', () => { document.getElementById('map-note').hidden = true; })
+          .addTo(map);
+      }
+      map.invalidateSize();
+      if (route) map.removeLayer(route);
+      const line = points.map(p => wgs2gcj(p.lat,p.lon));
+      route = (line.length === 1 ? L.circleMarker(line[0]) : L.polyline(line,{color:'#4f9cf9',weight:4})).addTo(map);
+      map.fitBounds(L.latLngBounds(line), {padding:[16,16], maxZoom:17});
+      el.textContent = points.length + ' 个定位点';
+    });
+  });
 }
 </script>
 {% endblock %}

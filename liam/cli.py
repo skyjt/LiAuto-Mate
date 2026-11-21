@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import sys
+from contextlib import closing
 from pathlib import Path
 
 
@@ -49,76 +50,34 @@ def main() -> int:
 
 def _build_stack(vin: str):
     """装配：settings → db → secrets → api → store → keeper。"""
+    from .auth.li_api import LiApi
+    from .auth.session_keeper import SessionKeeper
+    from .auth.session_store import SessionStore
     from .config import get_settings
     from .core.db import Database
     from .core.secrets import SecretBox
-    from .auth.li_api import LiApi
-    from .auth.session_store import SessionStore
-    from .auth.session_keeper import SessionKeeper
 
     settings = get_settings()
     db = Database(settings.data_dir / "liam.db")
     box = SecretBox.load_or_create(settings.data_dir)
-    api = LiApi()
+    api = LiApi(vin=vin)
     store = SessionStore(db, box)
     keeper = SessionKeeper(api, store)
     return settings, db, api, store, keeper
 
 
-def _vin_of(db) -> str:
-    row = db.query_one("SELECT value FROM meta WHERE key='vin'")
-    return row["value"] if row else ""
-
-
 async def _serve() -> int:
     import uvicorn
-    from contextlib import asynccontextmanager
 
-    settings, _db, api, _store, keeper = _build_stack(vin="")
     from .web.app import create_app
-    keeper_ref: dict = {"keeper": None}
-    collector_task: list = []
 
-    @asynccontextmanager
-    async def lifespan(_app):
-        await keeper.start()
-        keeper_ref["keeper"] = keeper
-        # 采集器：会话 OK 才启动（NEED_LOGIN 则等重登后手动/自动拉起）
-        vin = _db.query_one("SELECT value FROM meta WHERE key='vin'")
-        if vin and keeper.state != "need_login":
-            api.vin = vin["value"]        # travel/chargeRecords 端点要 VIN
-            from .collector.collector import Collector
-            from .collector.cloud_sync import CloudSync
-            col = Collector(api, keeper, _db, settings, vin["value"])
-            collector_task.append(asyncio.create_task(
-                col.run_forever(), name="collector"))
-            sync = CloudSync(api, _db, vin["value"],
-                             retention_days=settings.retention_days)
-            collector_task.append(asyncio.create_task(
-                sync.run_daily(), name="cloud-sync"))
-            logging.getLogger(__name__).info(
-                "collector + cloud-sync started vin=%s", vin["value"])
-        else:
-            logging.getLogger(__name__).warning(
-                "collector 未启动（vin=%s state=%s）",
-                vin["value"] if vin else "未配置", keeper.state)
-        # MCP session manager（挂载子应用的 lifespan 由这里驱动）
-        mcp = getattr(_app.state, "mcp", None)
-        if mcp:
-            async with mcp.session_manager.run():
-                yield
-        else:
-            yield
-        for t in collector_task:
-            t.cancel()
-        await keeper.stop()
-
-    app = create_app(settings, keeper_ref, lifespan, db=_db,
-                     vin=_vin_of(_db))
-    config = uvicorn.Config(app, host=settings.host, port=settings.port,
-                            log_level="info")
-    server = uvicorn.Server(config)
-    await server.serve()
+    settings, db, _api, _store, keeper = _build_stack(vin="")
+    try:
+        app = create_app(settings, {"keeper": keeper}, db=db)
+        config = uvicorn.Config(app, host=settings.host, port=settings.port, log_level="info")
+        await uvicorn.Server(config).serve()
+    finally:
+        db.close()
     return 0
 
 
@@ -198,25 +157,19 @@ async def _observe(vin: str, once: bool, interval: int) -> int:
 
 def _import_session(file: Path, vin: str) -> int:
     """spike session.json → session_store（开发期桥梁；生产走 Web 登录面板）。"""
+    from .auth.session_store import SessionStore
     from .config import get_settings
     from .core.db import Database
     from .core.secrets import SecretBox
-    from .auth.session_store import (
-        K_BEARER, K_COOKIES, K_DEVICE, K_REFRESH, SessionStore)
 
     data = json.loads(file.read_text())
     settings = get_settings()
-    db = Database(settings.data_dir / "liam.db")
-    box = SecretBox.load_or_create(settings.data_dir)
-    store = SessionStore(db, box)
-    store.save(K_BEARER, data["bearer"])
-    store.save(K_REFRESH, data["refresh_token"])
-    store.save(K_COOKIES, data["cookies"])
-    store.save(K_DEVICE, data["device_id"])
-    # VIN 也存 meta（M1 车辆配置用）
-    db.execute(
-        "INSERT INTO meta(key, value) VALUES('vin', ?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (vin,))
+    with closing(Database(settings.data_dir / "liam.db")) as db, db.transaction():
+        store = SessionStore(db, SecretBox.load_or_create(settings.data_dir))
+        store.save_login(data["bearer"], data["refresh_token"], data["cookies"], data["device_id"])
+        db.execute(
+            "INSERT INTO meta(key, value) VALUES('vin', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (vin,))
     print(f"[✓] 已导入凭据到 {settings.data_dir}/liam.db（vin={vin}）")
     return 0
 

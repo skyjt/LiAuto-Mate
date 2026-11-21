@@ -38,6 +38,21 @@ async def test_refresh_invalid_raises_relogin():
         await api.aclose()
 
 
+@pytest.mark.parametrize("status,body", [(429, ""), (503, ""), (200, "<html>")])
+async def test_temporary_refresh_failure_does_not_require_login(status, body):
+    from liam.auth.li_api import LiApiError
+
+    api = LiApi(refresh_token="fixture-refresh")
+    try:
+        async with respx.mock:
+            respx.post(API_ID + EP_TOKEN).respond(status, text=body)
+            with pytest.raises(LiApiError):
+                await api.refresh_bearer()
+            assert api.refresh_token == "fixture-refresh"
+    finally:
+        await api.aclose()
+
+
 @pytest.mark.asyncio
 async def test_scope_token_from_302_fragment(tmp_path):
     """/api/auth 302 fragment 里取 access_token（spike 实测形式）。"""

@@ -1,84 +1,61 @@
 {% extends "base.html" %}
 {% block title %}充电 · LiAuto-Mate{% endblock %}
+{% block assets %}<script src="/static/vendor/echarts.min.js"></script>{% endblock %}
 {% block content %}
-<div class="grid">
-  <div class="card" style="grid-column: span 2">
-    <h3>充电会话（本地推导）</h3>
-    {% if sessions %}
-    <table>
-      <tr><th>开始</th><th>结束</th><th>起 SOC</th><th>终 SOC</th><th>峰值功率</th><th>地点</th><th></th></tr>
-      {% for s in sessions %}
-      <tr>
-        <td>{{ s.start_ms | ctime }}</td>
-        <td>{{ s.end_ms | ctime if s.end_ms else '进行中' }}</td>
-        <td>{{ s.start_soc }}%</td>
-        <td>{{ s.end_soc or '—' }}%</td>
-        <td>{{ s.power_peak_kw | round(1) if s.power_peak_kw else '—' }} kW</td>
-        <td>{{ s.geofence or '?' }}</td>
-        <td><a href="#" onclick="showCurve({{ s.id }});return false">曲线</a></td>
-      </tr>
-      {% endfor %}
-    </table>
-    {% else %}<p class="muted">暂无本地推导会话——充一次电后自动生成。</p>{% endif %}
-  </div>
-  <div class="card">
-    <h3>月度充电统计（云端记录）</h3>
-    <div id="monthly" class="chart"></div>
-  </div>
-</div>
-
-<div class="card" style="margin-top:14px">
-  <h3>云端充电记录（{{ cloud | length }} 条，可回填历史）</h3>
-  {% if cloud %}
-  <table>
-    <tr><th>时间</th><th>电量</th><th>类型</th></tr>
-    {% for r in cloud %}
-    <tr>
-      <td>{{ r.start_ms | ctime if r.start_ms else r.record_id }}</td>
-      <td>{{ r.energy_kwh or '—' }} kWh</td>
-      <td>{{ {2: '慢充', 1: '快充', 3: '超充', 4: '超充'}.get(r.charging_type, r.charging_type) }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% else %}<p class="muted">云端记录待 T4 同步。</p>{% endif %}
-</div>
-
-<div class="card" style="margin-top:14px; display:none" id="curve-card">
-  <h3>充电曲线</h3>
-  <div id="curve" class="chart"></div>
-</div>
+<section class="card">
+  <h2>本地充电会话</h2>
+  {% if sessions %}<div class="table-scroll sessions" role="region" aria-label="充电会话明细" tabindex="0"><table>
+    <thead><tr><th>开始</th><th>结束</th><th>起始电量 (%)</th><th>结束电量 (%)</th><th>峰值功率 (kW)</th><th>地点</th><th>详情</th></tr></thead>
+    <tbody>{% for s in sessions %}<tr>
+      <td>{{ s.start_ms | ctime }}</td><td>{{ s.end_ms | ctime if s.end_ms else '进行中' }}</td>
+      <td>{{ s.start_soc if s.start_soc is not none else '—' }}</td><td>{{ s.end_soc if s.end_soc is not none else '—' }}</td>
+      <td>{{ s.power_peak_kw | round(1) if s.power_peak_kw is not none else '—' }}</td>
+      <td>{{ s.geofence or '未知' }}</td><td><button type="button" data-curve="{{ s.id }}" aria-controls="curve-card">曲线</button></td>
+    </tr>{% endfor %}</tbody>
+  </table></div>{% else %}<p class="muted">暂无本地充电会话。采集期间的充电过程将在这里记录。</p>{% endif %}
+</section>
+<section class="card stack" id="curve-card" hidden>
+  <h2 id="curve-title">充电曲线</h2><div id="curve" class="chart"></div>
+</section>
+<section class="card stack">
+  <h2>月度充电统计</h2><div id="monthly" class="chart"></div>
+</section>
+<section class="card stack">
+  <h2>云端充电记录</h2>
+  {% if cloud %}<div class="table-scroll"><table>
+    <thead><tr><th>开始时间</th><th>电量 (kWh)</th><th>类型</th></tr></thead>
+    <tbody>{% for r in cloud %}<tr>
+      <td>{{ r.start_ms | ctime }}</td><td>{{ r.energy_kwh if r.energy_kwh is not none else '—' }}</td>
+      <td>{{ {2:'慢充',1:'快充',3:'超充',4:'超充'}.get(r.charging_type, r.charging_type if r.charging_type is not none else '未知') }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>{% else %}<p class="muted">暂无云端充电记录，等待历史同步。</p>{% endif %}
+</section>
 <script>
-(async () => {
-  const rows = await (await fetch('/api/v1/charge-monthly.json')).json();
-  if (!rows.length) return;
-  echarts.init(document.getElementById('monthly')).setOption({
-    xAxis: { type: 'category', data: rows.map(r => r.ym) },
-    yAxis: [{ type: 'value', name: 'kWh' }, { type: 'value', name: '次' }],
-    series: [
-      { name: '电量', type: 'bar', itemStyle: {color: '#4f9cf9'},
-        data: rows.map(r => r.kwh && Math.round(r.kwh * 10) / 10) },
-      { name: '次数', type: 'line', yAxisIndex: 1, itemStyle: {color: '#3ecf8e'},
-        data: rows.map(r => r.n) }],
-    tooltip: { trigger: 'axis' }, darkMode: true,
-    grid: { left: 45, right: 40, top: 34, bottom: 28 },
+dashboard.load(document.getElementById('monthly'), '/api/v1/charge-monthly.json', (rows, el) => {
+  if (!rows.length) return dashboard.message(el, '同步到云端充电记录后可查看月度统计。');
+  dashboard.chart(el, {
+    legend:{data:['电量','次数']},
+    xAxis:{type:'category',data:rows.map(r=>r.ym)},
+    yAxis:[{type:'value',name:'kWh'},{type:'value',name:'次',minInterval:1}],
+    series:[{name:'电量',type:'bar',data:rows.map(r=>r.kwh == null ? null : +r.kwh.toFixed(1))},
+            {name:'次数',type:'line',yAxisIndex:1,data:rows.map(r=>r.n)}]
   });
-})();
-
-async function showCurve(id) {
-  document.getElementById('curve-card').style.display = 'block';
-  const pts = await (await fetch('/api/v1/charge-samples.json?session_id=' + id)).json();
-  const chart = echarts.init(document.getElementById('curve'));
-  chart.setOption({
-    xAxis: { type: 'time' },
-    yAxis: [
-      { type: 'value', name: 'SOC %', min: 0, max: 100 },
-      { type: 'value', name: 'kW' }],
-    series: [
-      { name: 'SOC', type: 'line', smooth: true,
-        data: pts.map(p => [p.ts_ms, p.soc]) },
-      { name: '功率', type: 'line', yAxisIndex: 1, smooth: true,
-        data: pts.map(p => [p.ts_ms, p.power_kw]) }],
-    tooltip: { trigger: 'axis' }, darkMode: true,
+});
+for (const button of document.querySelectorAll('[data-curve]')) {
+  button.addEventListener('click', () => {
+    const card = document.getElementById('curve-card');
+    card.hidden = false;
+    card.scrollIntoView({block:'nearest'});
+    document.getElementById('curve-title').textContent = button.closest('tr').cells[0].textContent + ' · 充电曲线';
+    dashboard.load(document.getElementById('curve'), '/api/v1/charge-samples.json?session_id='+button.dataset.curve, (pts, el) => {
+      if (!pts.some(p=>p.soc != null || p.power_kw != null)) return dashboard.message(el, '这次充电没有电量或功率采样。');
+      dashboard.chart(el, {
+        legend:{data:['电量','功率']}, xAxis:{type:'time'},
+        yAxis:[{type:'value',name:'%',min:0,max:100},{type:'value',name:'kW'}],
+        series:[{name:'电量',type:'line',data:pts.map(p=>[p.ts_ms,p.soc])},
+                {name:'功率',type:'line',yAxisIndex:1,data:pts.map(p=>[p.ts_ms,p.power_kw])}]
+      });
+    });
   });
 }
 </script>

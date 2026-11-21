@@ -220,7 +220,7 @@ class Sessionizer:
         self.db.execute(
             "UPDATE charge_sessions SET end_ms=?, end_soc=?, power_peak_kw=?, "
             "power_avg_kw=?, updated_at_ms=? WHERE id=?",
-            (now, soc, self._charge_peak_kw or None, avg, now, cid))
+            (now, soc, self._charge_peak_kw if self._charge_sample_n else None, avg, now, cid))
         log.info("充电会话 #%s 关闭（终 SOC %s%%）", cid, soc)
 
     def add_charge_sample(self, merged: dict[str, dict]) -> None:

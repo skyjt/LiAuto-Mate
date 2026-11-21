@@ -1,52 +1,34 @@
 """页面路由 + JSON API（M4）：6 页 + /api/v1。
 
-渲染策略：Jinja2 SSR + HTMX 局部刷新（概览 30s）；
+渲染策略：Jinja2 SSR + JSON 局部刷新（概览 30s）；
 图表数据走 /api/v1/*.json 端点由 ECharts 拉取。
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+import math
+import re
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from starlette.background import BackgroundTask
 
+from ..collector.analysis import _ps, soc_buckets, switch_value
 from ..config import Settings
 from ..core.db import Database
-from .ui_auth import COOKIE_NAME, UiAuth
+from .ui_auth import COOKIE_NAME, UI_PAGES, UiAuth, require_ui_session
 
-router = APIRouter()
-
-templates = Jinja2Templates(directory=str(
-    __import__("pathlib").Path(__file__).parent / "templates"))
-
-
-def _ps(v_json: str | None) -> Any:
-    """state_latest 的 value_json → python 值（可能双重 JSON）。
-
-    VSS 嵌套对象模式 {id, value, timestamp,...}（VehInfo.CarCenter 族）：
-    解出内层 value —— 实测坑：不解包会把整坨 dict 打上页面（含 accountId）。
-    """
-    if v_json is None:
-        return None
-    v = json.loads(v_json)
-    if isinstance(v, str) and v[:1] in "{[":
-        try:
-            v = json.loads(v)
-        except ValueError:
-            return v
-    if isinstance(v, dict) and "value" in v and "id" in v:
-        inner = v["value"]
-        if isinstance(inner, str) and inner[:1] in "{[":
-            try:
-                return json.loads(inner)
-            except ValueError:
-                return inner
-        return inner
-    return v
+router = APIRouter(dependencies=[Depends(require_ui_session)])
+password_router = APIRouter()
+templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
 def _state(db: Database, vin: str) -> dict[str, Any]:
@@ -57,8 +39,12 @@ def _state(db: Database, vin: str) -> dict[str, Any]:
     st = db.query_one(
         "SELECT state, start_ms FROM states WHERE vin=? AND end_ms IS NULL "
         "ORDER BY start_ms DESC LIMIT 1", (vin,))
-    def val(p): return _ps(latest[p]["value_json"]) if p in latest else None
-    def ts(p): return latest[p]["ts_ms"] if p in latest else None
+    def val(path):
+        return _ps(latest[path]["value_json"]) if path in latest else None
+
+    def switch(path):
+        return switch_value(val(path))
+
     loc = val("Vehicle.Location.CurrentLocationInfo") or {}
     soc = val("Vehicle.Powertrain.Battery.ResidueBattery")
     range_elec = val("Vehicle.Cabin.CLTC.PureElecEnduranceMileInd")
@@ -85,14 +71,14 @@ def _state(db: Database, vin: str) -> dict[str, Any]:
                 if isinstance(loc, dict) and loc.get("lat") is not None
                 else None),
         "doors": {
-            "main_locked": val("Vehicle.Body.DoorLockStatus.MainDoor"),
-            "trunk": val("Vehicle.Body.DoorLockStatus.TrunkDoor"),
+            "main_locked": switch("Vehicle.Body.DoorLockStatus.MainDoor"),
+            "trunk": switch("Vehicle.Body.DoorLockStatus.TrunkDoor"),
             # 门开关（实测 11-20 静止全 0 → 0=关，非零=开；尾门枚举语义
             # 未标定不单独高亮；充电口盖同理）
-            "door_main": val("Vehicle.Body.DoorSwitchStatus.MainDoor"),
-            "door_copilot": val("Vehicle.Body.DoorSwitchStatus.CopilotDoor"),
-            "door_bl": val("Vehicle.Body.DoorSwitchStatus.BackLeftDoor"),
-            "door_br": val("Vehicle.Body.DoorSwitchStatus.BackRightDoor"),
+            "door_main": switch("Vehicle.Body.DoorSwitchStatus.MainDoor"),
+            "door_copilot": switch("Vehicle.Body.DoorSwitchStatus.CopilotDoor"),
+            "door_bl": switch("Vehicle.Body.DoorSwitchStatus.BackLeftDoor"),
+            "door_br": switch("Vehicle.Body.DoorSwitchStatus.BackRightDoor"),
         },
         "charge_power": val("Vehicle.Powertrain.Battery.CLTCChargePower"),
         "charge_left_min": val(
@@ -103,9 +89,9 @@ def _state(db: Database, vin: str) -> dict[str, Any]:
             "RL": val("Vehicle.Chassis.Tire.RLTirePressure"),
             "RR": val("Vehicle.Chassis.Tire.RRTirePressure"),
         },
-        "sentry": val("Vehicle.Sentry.SentinelStatus"),
+        "sentry": switch("Vehicle.Sentry.SentinelStatus"),
         "charge_status": val("Vehicle.Powertrain.Battery.ChargeStatus"),
-        "online": val("Vehicle.ConnectManager.ConnectStatus.5G"),
+        "online": switch("Vehicle.ConnectManager.ConnectStatus.5G"),
         "last_ingest_ms": anyrow["m"] if anyrow and anyrow["m"] else None,
         "now_ms": now_ms,
     }
@@ -115,10 +101,7 @@ def _state(db: Database, vin: str) -> dict[str, Any]:
 # 页面
 # ----------------------------------------------------------------------
 
-async def _page(request: Request, tmpl: str, **ctx) -> HTMLResponse:
-    auth: UiAuth = request.app.state.ui_auth
-    if not auth.guard(request):
-        return RedirectResponse("/login", status_code=302)
+def _page(request: Request, tmpl: str, **ctx) -> HTMLResponse:
     return templates.TemplateResponse(request, tmpl, ctx)
 
 
@@ -127,7 +110,7 @@ async def page_overview(request: Request):
     db: Database = request.app.state.db
     vin: str = request.app.state.vin
     keeper = request.app.state.keeper_ref.get("keeper")
-    return await _page(
+    return _page(
         request, "overview.html",
         v=_state(db, vin), session=keeper.status() if keeper else None,
         refresh=30)
@@ -140,7 +123,7 @@ async def page_drives(request: Request):
     sessions = db.query_all(
         "SELECT * FROM drive_sessions WHERE vin=? ORDER BY start_ms DESC "
         "LIMIT 100", (vin,))
-    return await _page(request, "drives.html", sessions=sessions)
+    return _page(request, "drives.html", sessions=sessions)
 
 
 @router.get("/charging", response_class=HTMLResponse)
@@ -153,7 +136,7 @@ async def page_charging(request: Request):
     cloud = db.query_all(
         "SELECT * FROM charge_records_cloud WHERE vin=? "
         "ORDER BY start_ms DESC LIMIT 100", (vin,))
-    return await _page(request, "charging.html", sessions=sessions, cloud=cloud)
+    return _page(request, "charging.html", sessions=sessions, cloud=cloud)
 
 
 @router.get("/trends", response_class=HTMLResponse)
@@ -169,7 +152,7 @@ async def page_trends(request: Request):
         parts = r["path"].split(".")
         key = ".".join(parts[:3]) if len(parts) > 3 else ".".join(parts[:2])
         groups.setdefault(key, []).append(r["path"])
-    return await _page(request, "trends.html", groups=groups)
+    return _page(request, "trends.html", groups=groups)
 
 
 @router.get("/battery", response_class=HTMLResponse)
@@ -179,7 +162,7 @@ async def page_battery(request: Request):
     months = db.query_all(
         "SELECT date, mileage_km, energy_kwh FROM travel_daily "
         "WHERE vin=? AND date LIKE '20%' ORDER BY date", (vin,))
-    return await _page(request, "battery.html", months=months)
+    return _page(request, "battery.html", months=months)
 
 
 @router.get("/settings", response_class=HTMLResponse)
@@ -188,10 +171,10 @@ async def page_settings(request: Request, name: str = "", lat: str = "",
     settings: Settings = request.app.state.settings
     db: Database = request.app.state.db
     keeper = request.app.state.keeper_ref.get("keeper")
-    n_latest = db.query_one("SELECT COUNT(*) c FROM state_latest")["c"]
-    n_hist = db.query_one("SELECT COUNT(*) c FROM state_history")["c"]
-    geofences = db.query_all("SELECT * FROM geofences ORDER BY name")
     vin = request.app.state.vin
+    n_latest = db.query_one("SELECT COUNT(*) c FROM state_latest WHERE vin=?", (vin,))["c"]
+    n_hist = db.query_one("SELECT COUNT(*) c FROM state_history WHERE vin=?", (vin,))["c"]
+    geofences = db.query_all("SELECT * FROM geofences ORDER BY name")
     ota_rows = db.query_all(
         "SELECT path, value_json FROM state_latest "
         "WHERE vin=? AND (path LIKE 'Vehicle.OTA.%' "
@@ -230,17 +213,36 @@ async def page_settings(request: Request, name: str = "", lat: str = "",
                 if isinstance(left, (int, float)) and not isinstance(left, bool)
                 else (f"{base}" + (f" · {due_s}" if due_s else "")))
         maint.append(item)
-    return await _page(
+    return _page(
         request, "settings.html",
         s=settings, keeper=keeper.status() if keeper else None,
         n_latest=n_latest, n_hist=n_hist, geofences=geofences,
-        ota=ota, ota_version=ota_version, maint=maint,
+        ota_version=ota_version, maint=maint, mcp_enabled=hasattr(request.app.state, "mcp"),
         pre_name=name, pre_lat=lat, pre_lon=lon)
 
 
 # ----------------------------------------------------------------------
-# 地点管理（geofence）+ 数据导出
+# 首次接车、地点管理与数据导出
 # ----------------------------------------------------------------------
+
+@router.post("/settings/vehicle")
+async def bind_vehicle(request: Request):
+    state = request.app.state
+    form = await request.form()
+    raw = str(form.get("vin") or "").strip()
+    if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", raw, re.ASCII | re.IGNORECASE):
+        return RedirectResponse("/settings?err=请输入17位车架号，字母不含I、O、Q#session", 303)
+    vin = raw.upper()
+    if not state.vin:
+        state.db.execute(
+            "INSERT INTO meta(key,value) VALUES('vin',?) ON CONFLICT(key) "
+            "DO UPDATE SET value=excluded.value WHERE meta.value=''", (vin,))
+        state.vin = state.db.query_one("SELECT value FROM meta WHERE key='vin'")["value"]
+        state.collection_changed.set()
+    if state.vin.upper() != vin:
+        return RedirectResponse("/settings?err=此数据目录已绑定其他车辆#session", 303)
+    return RedirectResponse("/settings#session", 303)
+
 
 @router.post("/settings/geofence/add")
 async def geofence_add(request: Request):
@@ -250,81 +252,86 @@ async def geofence_add(request: Request):
         name = str(form.get("name") or "").strip()
         lat, lon = float(form.get("lat")), float(form.get("lon"))
         radius = float(form.get("radius") or 100)
-        if not name or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        if not name or not (-90 <= lat <= 90 and -180 <= lon <= 180
+                            and math.isfinite(radius) and radius > 0):
             raise ValueError
     except (TypeError, ValueError):
-        return RedirectResponse("/settings?err=参数不合法", status_code=302)
+        return RedirectResponse("/settings?err=请填写有效名称、经纬度及正数半径", status_code=303)
     db.execute(
         "INSERT INTO geofences(name, lat, lon, radius_m) VALUES(?,?,?,?)",
         (name, lat, lon, radius))
-    return RedirectResponse("/settings", status_code=302)
+    return RedirectResponse("/settings#geo", status_code=303)
 
 
 @router.post("/settings/geofence/delete")
 async def geofence_delete(request: Request):
     db: Database = request.app.state.db
     form = await request.form()
-    db.execute("DELETE FROM geofences WHERE id=?", (int(form.get("id") or 0),))
-    return RedirectResponse("/settings", status_code=302)
+    try:
+        fence_id = int(form.get("id") or "")
+    except (ValueError, TypeError):
+        return RedirectResponse("/settings?err=无效的地点", status_code=303)
+    db.execute("DELETE FROM geofences WHERE id=?", (fence_id,))
+    return RedirectResponse("/settings#geo", status_code=303)
 
 
 @router.get("/settings/export")
-async def data_export(request: Request, table: str = "db"):
-    """数据导出：table=db 整库 / sessions / cloud（CSV）。"""
+def data_export(request: Request, table: str = "db"):
+    """从一致的 SQLite 快照下载整库，或按表导出 CSV。"""
     db: Database = request.app.state.db
-    from fastapi.responses import StreamingResponse
     if table == "db":
-        import io
-        def gen():
-            with db._lock:    # 只读导出：直接 stream 原文件
-                with open(db._path, "rb") as f:
-                    while chunk := f.read(1 << 16):
-                        yield chunk
-        return StreamingResponse(
-            gen(), media_type="application/octet-stream",
-            headers={"Content-Disposition":
-                     "attachment; filename=liam-export.db"})
-    sql = {"sessions": "SELECT * FROM drive_sessions ORDER BY start_ms",
-           "cloud": "SELECT * FROM charge_records_cloud ORDER BY start_ms",
-           "charge": "SELECT * FROM charge_sessions ORDER BY start_ms"}.get(table)
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp:
+            path = Path(temp.name)
+        try:
+            db.backup_to(path)
+            return FileResponse(path, filename="liam-export.db", media_type="application/octet-stream",
+                                background=BackgroundTask(path.unlink, missing_ok=True))
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+    sql = {"sessions": "SELECT * FROM drive_sessions WHERE vin=? ORDER BY start_ms",
+           "cloud": "SELECT * FROM charge_records_cloud WHERE vin=? ORDER BY start_ms",
+           "charge": "SELECT * FROM charge_sessions WHERE vin=? ORDER BY start_ms"}.get(table)
     if not sql:
         return RedirectResponse("/settings", status_code=302)
-    rows = db.query_all(sql)
+    rows = db.query_all(sql, (request.app.state.vin,))
     if not rows:
-        return RedirectResponse("/settings?err=空表", status_code=302)
-    import csv
-    import io as _io
-    buf = _io.StringIO()
+        return RedirectResponse("/settings?err=所选数据暂无可导出的记录", status_code=302)
+    buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(rows[0].keys())
     for r in rows:
-        w.writerow([r[k] for k in rows[0].keys()])
-    return StreamingResponse(
-        iter([buf.getvalue()]), media_type="text/csv",
+        w.writerow(tuple(r))
+    return Response(
+        buf.getvalue(), media_type="text/csv",
         headers={"Content-Disposition":
                  f"attachment; filename={table}.csv"})
 
 
-@router.get("/login", response_class=HTMLResponse)
-async def page_login(request: Request):
+@password_router.get("/login", response_class=HTMLResponse)
+async def page_login(request: Request, next: str = "/"):
+    target = next if next in UI_PAGES else "/"
     auth: UiAuth = request.app.state.ui_auth
     if auth.guard(request):
-        return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse(request, "login.html", {"err": ""})
+        return RedirectResponse(target, status_code=302)
+    return templates.TemplateResponse(request, "login.html", {"err": "", "target": target})
 
 
-@router.post("/login")
+@password_router.post("/login")
 async def do_login(request: Request):
     auth: UiAuth = request.app.state.ui_auth
     form = await request.form()
     password = str(form.get("password") or "")
+    target = str(form.get("next") or "/")
+    if target not in UI_PAGES:
+        target = "/"
     if auth.check_password(password):
-        resp = RedirectResponse("/", status_code=302)
+        resp = RedirectResponse(target, status_code=303)
         resp.set_cookie(COOKIE_NAME, auth.make_cookie(),
                         max_age=30 * 86400, httponly=True, samesite="lax")
         return resp
     return templates.TemplateResponse(
-        request, "login.html", {"err": "密码不正确"}, status_code=401)
+        request, "login.html", {"err": "密码不正确，请重新输入。", "target": target}, status_code=401)
 
 
 # ----------------------------------------------------------------------
@@ -347,15 +354,16 @@ async def api_signal(request: Request, path: str, hours: int = 24,
     rows = db.query_all(
         "SELECT ts_ms, ingested_at_ms, value_json FROM state_history "
         "WHERE vin=? AND path=? AND ingested_at_ms>? "
-        "ORDER BY ingested_at_ms LIMIT ?",
-        (vin, path, since, limit))
+        "ORDER BY ingested_at_ms DESC, id DESC LIMIT ?",
+        (vin, path, since, limit + 1 if limit >= 0 else -1))
+    truncated = 0 <= limit < len(rows)
     out = []
-    for r in rows:
+    for r in reversed(rows[:limit] if truncated else rows):
         v = _ps(r["value_json"])
         if isinstance(v, dict):        # 数值化：图表要标量
-            v = v.get("spd") or v.get("value") or None
+            v = v.get("spd") if v.get("spd") is not None else v.get("value")
         out.append({"t": r["ingested_at_ms"], "v": v})
-    return JSONResponse({"path": path, "points": out})
+    return JSONResponse({"path": path, "points": out, "truncated": truncated})
 
 
 @router.get("/api/v1/positions.json")
@@ -363,7 +371,7 @@ async def api_positions(request: Request, session_id: int):
     db: Database = request.app.state.db
     rows = db.query_all(
         "SELECT ts_ms, lat, lon, spd, dir FROM positions "
-        "WHERE drive_session_id=? ORDER BY ts_ms", (session_id,))
+        "WHERE vin=? AND drive_session_id=? ORDER BY ts_ms", (request.app.state.vin, session_id))
     return JSONResponse([dict(r) for r in rows])
 
 
@@ -372,7 +380,7 @@ async def api_charge_samples(request: Request, session_id: int):
     db: Database = request.app.state.db
     rows = db.query_all(
         "SELECT ts_ms, soc, power_kw, current, voltage FROM charge_samples "
-        "WHERE charge_session_id=? ORDER BY ts_ms", (session_id,))
+        "WHERE vin=? AND charge_session_id=? ORDER BY ts_ms", (request.app.state.vin, session_id))
     return JSONResponse([dict(r) for r in rows])
 
 
@@ -401,24 +409,9 @@ async def api_charge_monthly(request: Request):
 
 @router.get("/api/v1/soc-histogram.json")
 async def api_soc_histogram(request: Request):
-    """充电深度分布（近 90 天 SOC 采样按 10% 分桶）。"""
-    db: Database = request.app.state.db
-    vin: str = request.app.state.vin
-    since = int(time.time() * 1000) - 90 * 86400 * 1000
-    rows = db.query_all(
-        "SELECT value_json FROM state_history WHERE vin=? AND path=? "
-        "AND ingested_at_ms>? ", (vin,
-        "Vehicle.Powertrain.Battery.ResidueBattery", since))
-    buckets = [0] * 10
-    n = 0
-    for r in rows:
-        try:
-            v = float(_ps(r["value_json"]))
-            buckets[min(int(v // 10), 9)] += 1
-            n += 1
-        except (TypeError, ValueError):
-            pass
-    return JSONResponse({"samples": n, "buckets": buckets})
+    """近 90 天 SOC 变化采样的电量分布。"""
+    buckets = soc_buckets(request.app.state.db, request.app.state.vin, days=90, width=10)
+    return JSONResponse({"samples": sum(buckets), "buckets": buckets})
 
 
 @router.get("/api/v1/vampire-drain.json")

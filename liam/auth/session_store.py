@@ -71,6 +71,16 @@ class SessionStore:
             K_DEVICE: api.device_id,
         }
 
+    def save_login(self, bearer: str | None, refresh_token: str | None,
+                   cookies: dict, device_id: str | None) -> None:
+        """将一次登录的凭据一起写入，防止混用上次登录的令牌。"""
+        with self._db.transaction():
+            self.save(K_BEARER, bearer or "")
+            self.save(K_REFRESH, refresh_token or "")
+            self.save(K_COOKIES, cookies)
+            if device_id:
+                self.save(K_DEVICE, device_id)
+
     def restore_into(self, api) -> bool:
         """恢复到 LiApi 实例；有 refresh_token 或 bearer 即视为可恢复。"""
         bearer = self.load(K_BEARER)
@@ -88,6 +98,7 @@ class SessionStore:
 
     def persist_all(self, api) -> None:
         """整体落库（bearer 过期时间未知则 NULL，由 401 反应式处理）。"""
-        for k, v in self.snapshot_from_api(api).items():
-            if v:
-                self.save(k, v)
+        with self._db.transaction():
+            for k, v in self.snapshot_from_api(api).items():
+                if v:
+                    self.save(k, v)

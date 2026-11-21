@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import json
+import sqlite3
+from contextlib import closing
 
+import pytest
+
+from liam.auth.session_store import K_BEARER, K_COOKIES, K_DEVICE, K_REFRESH, SessionStore
+from liam.auth.signer import content_md5, sign_headers
 from liam.core.db import Database
 from liam.core.secrets import SecretBox
-from liam.auth.session_store import (
-    K_BEARER, K_COOKIES, K_DEVICE, K_REFRESH, SessionStore)
-from liam.auth.signer import content_md5, sign_headers
 
 
 def test_secret_box_roundtrip(tmp_path):
@@ -74,3 +76,21 @@ def test_signer_sts_shape():
 def test_key_suite_pure_functions():
     from liam.auth.key_suite import build_data_to_sign
     assert build_data_to_sign("r", "d", "k", "n", "t") == "r:d:k:n:t"
+
+
+def test_write_helpers_respect_outer_rollback(tmp_path):
+    with closing(Database(tmp_path / "atomic.db")) as db:
+        sql = "INSERT INTO meta(key,value) VALUES(?,?)"
+        db.execute(sql, ("before", "original"))
+        with pytest.raises(sqlite3.IntegrityError), db.transaction():
+            db.insert(sql, ("new", "one"))
+            db.execute_ret("UPDATE meta SET value='changed' WHERE key='before'")
+            db.executemany(sql, [("other", "two"), ("new", "duplicate")])
+        assert [tuple(row) for row in db.query_all("SELECT * FROM meta")] == [("before", "original")]
+        with db.transaction():
+            db.execute(sql, ("outer", "keep"))
+            with pytest.raises(sqlite3.IntegrityError), db.transaction():
+                db.execute(sql, ("inner", "discard"))
+                db.execute(sql, ("before", "duplicate"))
+        assert db.query_one("SELECT value FROM meta WHERE key='outer'")["value"] == "keep"
+        assert db.query_one("SELECT value FROM meta WHERE key='inner'") is None

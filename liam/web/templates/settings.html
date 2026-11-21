@@ -1,52 +1,65 @@
 {% extends "base.html" %}
 {% block title %}设置 · LiAuto-Mate{% endblock %}
 {% block content %}
+{% if request.query_params.get("err") %}<p class="banner" role="alert">{{ request.query_params.get("err") }}</p>{% endif %}
 <div class="grid">
-  <div class="card">
-    <h3>会话</h3>
+  <div class="card" id="session">
+    <h2>会话</h2>
+    {% if request.app.state.vin %}
+    <div class="kv"><span class="muted">已绑定车辆</span><b>VIN 尾号 {{ request.app.state.vin[-4:] }}</b></div>
+    {% else %}
+    <form method="post" action="/settings/vehicle" class="actions">
+      <label class="field">车辆识别代号（VIN）
+        <input name="vin" required pattern="[A-HJ-NPR-Za-hj-npr-z0-9]{17}" maxlength="17"
+               autocapitalize="characters" spellcheck="false" aria-describedby="vin-hint">
+      </label>
+      <button class="primary">绑定车辆</button>
+    </form>
+    <p id="vin-hint" class="muted">请核对行驶证上的 17 位车架号。每个数据目录绑定一辆车，账号登录后自动开始采集。</p>
+    {% endif %}
     {% if keeper %}
-    <div class="kv"><span class="muted">状态</span><b>{{ keeper.state }}</b></div>
-    <div class="kv"><span class="muted">主 Bearer</span><b>{{ '有' if keeper.has_bearer else '无' }}</b></div>
-    <div class="kv"><span class="muted">refresh_token</span><b>{{ '有' if keeper.has_refresh else '无' }}</b></div>
+    <div class="kv"><span class="muted">状态</span><b>{{ {'ok':'正常','degraded':'受限','need_login':'需要登录','boot':'启动中'}.get(keeper.state, keeper.state) }}</b></div>
+    <div class="kv"><span class="muted">访问令牌</span><b>{{ '有' if keeper.has_bearer else '无' }}</b></div>
+    <div class="kv"><span class="muted">刷新令牌</span><b>{{ '有' if keeper.has_refresh else '无' }}</b></div>
     <div class="kv"><span class="muted">登录 cookie</span><b>{{ '有' if keeper.has_cookies else '无' }}</b></div>
     {% if keeper.last_error %}
     <div class="kv"><span class="muted">最近错误</span><b class="muted">{{ keeper.last_error[:80] }}</b></div>
     {% endif %}
-    <a href="/liam-login"><button>重新登录（短信）</button></a>
+    <a class="button stack" href="/liam-login">理想账号登录</a>
     {% else %}<p class="muted">未启动</p>{% endif %}
   </div>
   <div class="card">
-    <h3>采集配置（env 可调）</h3>
+    <h2>采集配置</h2>
     <div class="kv"><span class="muted">实时批</span><b>{{ s.poll_realtime }}s</b></div>
     <div class="kv"><span class="muted">行驶定位</span><b>{{ s.poll_drive_loc }}s</b></div>
     <div class="kv"><span class="muted">充电采样</span><b>{{ s.poll_charge }}s</b></div>
     <div class="kv"><span class="muted">休眠探测</span><b>{{ s.poll_sleep_probe }}s</b></div>
     <div class="kv"><span class="muted">配置档</span><b>{{ s.poll_config }}s</b></div>
-    <div class="kv"><span class="muted">历史保留</span><b>{{ s.retention_days }} 天</b></div>
+    <div class="kv"><span class="muted">历史保留</span><b>{{ (s.retention_days|string ~ ' 天') if s.retention_days > 0 else '永久保留' }}</b></div>
     <div class="kv"><span class="muted">电池容量</span><b>{{ s.battery_kwh }} kWh</b></div>
   </div>
   <div class="card">
-    <h3>数据</h3>
-    <div class="kv"><span class="muted">latest 路径</span><b>{{ n_latest }}</b></div>
-    <div class="kv"><span class="muted">history 行</span><b>{{ n_hist }}</b></div>
+    <h2>数据</h2>
+    <div class="kv"><span class="muted">已采集信号</span><b>{{ n_latest }}</b></div>
+    <div class="kv"><span class="muted">历史变化记录</span><b>{{ n_hist }}</b></div>
     <div class="kv"><span class="muted">MCP</span>
-      <b>{{ '已启用' if s.mcp_token else '未设置 token（关闭）' }}</b></div>
-    <div class="kv"><span class="muted">地图 provider</span>
-      <b>{{ '高德 JS API' if s.amap_key else '高德瓦片直连' }}{% if s.map_provider == 'osm' %}（强制 OSM）{% endif %}</b></div>
+      <b>{{ '已启用' if mcp_enabled else ('加载失败，请查看启动日志' if s.mcp_token else '已关闭') }}</b></div>
+    <div class="kv"><span class="muted">轨迹底图</span>
+      <b>高德栅格瓦片</b></div>
     <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
-      <a href="/settings/export?table=db"><button>整库 .db</button></a>
-      <a href="/settings/export?table=sessions"><button>行程 CSV</button></a>
-      <a href="/settings/export?table=cloud"><button>云端充电 CSV</button></a>
-      <a href="/settings/export?table=charge"><button>充电会话 CSV</button></a>
+      <a class="button" href="/settings/export?table=db">整库 .db</a>
+      <a class="button" href="/settings/export?table=sessions">行程 CSV</a>
+      <a class="button" href="/settings/export?table=cloud">云端充电 CSV</a>
+      <a class="button" href="/settings/export?table=charge">充电会话 CSV</a>
     </div>
   </div>
 </div>
 
 <div class="card" style="margin-top:14px">
-  <h3>车辆维护（VSS 快照 · OTA/保养走 T3 慢档每日采集）</h3>
+  <h2>车辆维护</h2>
   {% if ota_version %}
   <div class="kv"><span class="muted">当前版本</span><b>{{ ota_version }}</b></div>
-  {% else %}<p class="muted">OTA 待 T3 采集（24h 内）。</p>{% endif %}
+  {% else %}<p class="muted">暂无 OTA 版本，等待慢档采集。</p>{% endif %}
   {% if maint %}
   <table style="margin-top:8px">
     <tr><th>保养项</th></tr>
@@ -58,32 +71,32 @@
 </div>
 
 <div class="card" style="margin-top:14px">
-  <h3>常去地点（geofence —— 会话自动命名「家 → 公司」）</h3>
+  <h2>命名地点</h2>
   {% if geofences %}
-  <table>
+  <div class="table-scroll"><table>
     <tr><th>名称</th><th>纬度</th><th>经度</th><th>半径</th><th></th></tr>
     {% for g in geofences %}
     <tr>
-      <td>{{ g.name }}</td>
+      <th scope="row">{{ g.name }}</th>
       <td>{{ '%.5f' % g.lat }}</td>
       <td>{{ '%.5f' % g.lon }}</td>
       <td>{{ g.radius_m }} m</td>
       <td>
-        <form method="post" action="/settings/geofence/delete" style="display:inline">
+        <form method="post" action="/settings/geofence/delete" onsubmit="return confirm('删除这个命名地点？')">
           <input type="hidden" name="id" value="{{ g.id }}">
-          <button>删除</button>
+          <button aria-label="删除地点 {{ g.name }}">删除</button>
         </form>
       </td>
     </tr>
     {% endfor %}
-  </table>
+  </table></div>
   {% else %}<p class="muted">还没有命名地点——加一个「家」试试（在概览页复制当前坐标）。</p>{% endif %}
-  <form method="post" action="/settings/geofence/add" style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap" id="geo">
-    <input name="name" placeholder="名称（如：家）" required value="{{ pre_name }}" id="geo-name">
-    <input name="lat" placeholder="纬度" required style="width:110px" value="{{ pre_lat }}">
-    <input name="lon" placeholder="经度" required style="width:110px" value="{{ pre_lon }}">
-    <input name="radius" placeholder="半径 m" value="100" style="width:90px">
-    <button>添加</button>
+  <form method="post" action="/settings/geofence/add" class="actions stack" id="geo">
+    <label class="field">地点名称<input name="name" required value="{{ pre_name }}" id="geo-name"></label>
+    <label class="field">纬度<input type="number" name="lat" required step="any" min="-90" max="90" value="{{ pre_lat }}"></label>
+    <label class="field">经度<input type="number" name="lon" required step="any" min="-180" max="180" value="{{ pre_lon }}"></label>
+    <label class="field">半径 (m)<input type="number" name="radius" required step="any" value="100" min="0" oninput="this.setCustomValidity(this.valueAsNumber <= 0 ? '半径必须大于零' : '')"></label>
+    <button class="primary">添加地点</button>
   </form>
 </div>
 {% endblock %}

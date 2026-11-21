@@ -1,34 +1,27 @@
 <!doctype html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}LiAuto-Mate{% endblock %}</title>
-  <link rel="stylesheet" href="/static/vendor/leaflet.css">
   <link rel="stylesheet" href="/static/css/liam.css">
-  <script src="/static/vendor/htmx.min.js"></script>
-  <script src="/static/vendor/echarts.min.js"></script>
-  <script src="/static/vendor/leaflet.js"></script>
-  <script src="/static/js/gcj02.js"></script>
-  <script type="importmap">
-  { "imports": {
-      "three": "/static/vendor/three/three.module.min.js",
-      "three/addons/": "/static/vendor/three/addons/"
-  } }
-  </script>
+  <script src="/static/js/dashboard.js"></script>
+  {% block assets %}{% endblock %}
 </head>
 <body>
-<nav>
-  <span class="brand">⚡ LiAuto-Mate</span>
-  <a href="/">概览</a>
-  <a href="/drives">行程</a>
-  <a href="/charging">充电</a>
-  <a href="/trends">趋势</a>
-  <a href="/battery">电池</a>
-  <a href="/settings">设置</a>
-</nav>
-<main>
-{% block content %}{% endblock %}
+{% set nav = [('/', '概览'), ('/drives', '行程'), ('/charging', '充电'), ('/trends', '趋势'), ('/battery', '电池'), ('/settings', '设置')] %}
+<a class="skip" href="#content">跳到内容</a>
+<nav aria-label="主导航"><div class="nav-inner">
+  <a href="/" class="brand">LiAuto-Mate</a>
+  <div class="nav-links">
+    {% for path, label in nav %}
+    <a href="{{ path }}"{% if request.url.path == path %} aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </div>
+</div></nav>
+<main id="content">
+  <h1>{{ dict(nav).get(request.url.path, '理想账号登录') }}</h1>
+  {% block content %}{% endblock %}
 </main>
 </body>
 </html>

@@ -10,20 +10,23 @@ import hashlib
 import hmac
 import time
 
-from fastapi import Request
-from fastapi.responses import RedirectResponse
+from fastapi import HTTPException, Request
 
 COOKIE_NAME = "liam_session"
 SESSION_TTL = 30 * 86400   # 30 天
 
 
-def _secret(settings) -> bytes:
-    """会话签名密钥：LIAM_SECRET_KEY 或首次生成存 meta 表。"""
-    if settings.secret_key:
-        return settings.secret_key.encode()
-    from ..core.db import Database   # 延迟导入避免环
-    # settings 层面拿 db 不方便——由 app 装配时注入；这里约定 key 生成在 pages 装配处
-    return b""
+UI_PAGES = {"/", "/drives", "/charging", "/trends", "/battery", "/settings", "/liam-login"}
+
+
+async def require_ui_session(request: Request) -> None:
+    if request.app.state.ui_auth.guard(request):
+        return
+    path = request.url.path
+    if path.endswith(".json") or path.startswith("/liam-login/"):
+        raise HTTPException(401, "请先登录看板")
+    target = f"/login?next={path}" if path in UI_PAGES else "/login"
+    raise HTTPException(303, headers={"Location": target})
 
 
 class UiAuth:

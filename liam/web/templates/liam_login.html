@@ -1,97 +1,91 @@
 {% extends "base.html" %}
-{% block title %}重新登录 · LiAuto-Mate{% endblock %}
+{% block title %}理想账号登录 · LiAuto-Mate{% endblock %}
 {% block content %}
-<div class="card" style="max-width:520px">
-  <h3>理想账号重登（短信验证码）</h3>
-
-  <div id="phase-start">
-    <div class="kv"><span class="muted">手机号</span>
-      <input id="phone" value="{{ phone }}" placeholder="11 位手机号"
-             {% if phone %}readonly{% endif %} style="width:180px"></div>
-    <p class="muted" style="font-size:12px">
-      流程：点击开始 → 自动填号/滑块（无需人工）→ 短信发出后在这里输入验证码。
-      短信约 2 条/10 分钟限频，请勿频繁发起。
-    </p>
-    <button onclick="startFlow()">① 开始（自动到发短信为止）</button>
-    {% if cooldown_left > 0 %}
-    <span class="muted" id="cd">冷却 {{ cooldown_left // 60 }} 分 {{ cooldown_left % 60 }} 秒</span>
-    {% endif %}
-  </div>
-
-  <div id="phase-code" style="display:none">
-    <p>📨 短信已发送至 <b id="phone-tail">****</b>，请输入验证码：</p>
-    <input id="code" placeholder="6 位验证码" maxlength="8" style="width:140px">
-    <button onclick="submitCode()">② 提交</button>
-  </div>
-
-  <div id="phase-done" style="display:none">
-    <p>✅ 登录成功，会话已恢复。2 秒后返回概览…</p>
-  </div>
-
-  <div id="flow-status" class="muted" style="margin-top:14px; font-size:12px;
-       white-space:pre-wrap"></div>
-  <img id="shot" style="max-width:100%; border-radius:8px; margin-top:10px; display:none">
-</div>
-
+<section class="card" style="max-width:540px">
+  <h2>短信验证</h2>
+  <p class="muted">开始后会自动完成滑块验证；短信发出后输入收到的验证码即可。滑块未通过不会发送短信，可直接重试。</p>
+  {% if login_error %}<p class="form-status" role="alert">{{ login_error }}</p>{% endif %}
+  <form class="actions" id="phase-start">
+    <label class="field">手机号<input id="phone" type="tel" autocomplete="tel-national" inputmode="numeric"
+      pattern="[0-9]{11}" maxlength="11" required placeholder="11 位手机号" value="{{ phone }}"></label>
+    <button class="primary" id="start" {% if login_error %}disabled{% endif %}>开始登录</button>
+  </form>
+  <p class="muted" id="cooldown" hidden></p>
+  <form class="actions" id="phase-code" hidden>
+    <label class="field"><span>发送至 <b id="phone-tail"></b> 的验证码</span>
+      <input id="code" inputmode="numeric" autocomplete="one-time-code" required pattern="[0-9]{4,8}" maxlength="8"></label>
+    <button class="primary" id="submit-code">提交验证码</button>
+  </form>
+  <p id="feedback" role="status" class="form-status"></p>
+  <pre id="flow-status" class="muted form-status"></pre>
+  <img id="shot" alt="本次账号登录的诊断截图" style="max-width:100%" hidden>
+</section>
 <script>
-let _timer = null;
 const $ = id => document.getElementById(id);
-
+let phase = 'loading', busy = false, pollTimer;
+const loginBlocked = {{ 'true' if login_error else 'false' }};
+let cooldownEnd = Date.now() + {{ cooldown_left }} * 1000;
+function showControls() {
+  const remaining = Math.max(0, Math.ceil((cooldownEnd - Date.now())/1000));
+  $('phase-start').hidden = !['idle','failed'].includes(phase);
+  $('phase-code').hidden = !['waiting_code','submitting'].includes(phase);
+  $('start').disabled = loginBlocked || busy || remaining > 0;
+  $('submit-code').disabled = busy || phase === 'submitting';
+  $('cooldown').hidden = $('phase-start').hidden || !remaining;
+  if (remaining) $('cooldown').textContent = '可在 ' + remaining + ' 秒后再次发起登录。';
+}
 async function poll() {
-  const st = await (await fetch('/liam-login/status.json')).json();
-  $('flow-status').textContent = (st.log || []).join('\n') + (st.error ? '\n!! ' + st.error : '');
-  if (st.screenshot) { $('shot').src = 'data:image/png;base64,' + st.screenshot; $('shot').style.display = 'block'; }
-  if (st.state === 'waiting_code') {
-    $('phase-start').style.display = 'none';
-    $('phase-code').style.display = 'block';
-    $('phone-tail').textContent = '****' + st.phone_tail;
-    if (!_codeFocus) { $('code').focus(); _codeFocus = true; }
-  }
-  if (st.state === 'done' || st.state === 'submitting') {
-    $('phase-start').style.display = 'none';
-    $('phase-code').style.display = st.state === 'submitting' ? 'block' : 'none';
-    if (st.state === 'done') {
-      const fin = await (await fetch('/liam-login/finish.json')).json();
-      if (fin.ok) {
-        $('phase-code').style.display = 'none';
-        $('phase-done').style.display = 'block';
-        clearInterval(_timer);
-        setTimeout(() => location.href = '/', 2000);
+  clearTimeout(pollTimer);
+  try {
+    const st = await dashboard.json('/liam-login/status.json');
+    const wasWaiting = phase === 'waiting_code';
+    phase = st.state;
+    if (st.cooldown_left != null) cooldownEnd = Date.now() + st.cooldown_left * 1000;
+    $('flow-status').textContent = (st.log || []).join('\n');
+    $('shot').hidden = !st.screenshot;
+    if (st.screenshot) $('shot').src = 'data:image/png;base64,' + st.screenshot;
+    $('phone-tail').textContent = '尾号 ' + (st.phone_tail || '****');
+    $('feedback').textContent = st.error || ({running:'正在准备账号登录，请稍候。',submitting:'正在验证…',
+      waiting_code:'请输入收到的短信验证码。',recovering:'凭据已保存，正在恢复会话…'}[phase] || '');
+    showControls();
+    if (phase === 'waiting_code' && !wasWaiting) $('code').focus();
+    if (phase === 'done') {
+      const result = await dashboard.json('/liam-login/finish.json');
+      if (result.ok) {
+        const target = result.next || '/';
+        $('feedback').textContent = target === '/' ? '登录完成，即将返回概览。' : '登录完成，请前往设置绑定车辆。';
+        setTimeout(() => location.assign(target), 1000);
+        return;
       }
     }
-  }
-  if (st.state === 'failed') {
-    $('phase-code').style.display = 'none';
-    $('phase-start').style.display = 'block';   // 允许重试
-    clearInterval(_timer);
+    if (!['idle','failed'].includes(phase)) pollTimer = setTimeout(poll, 3000);
+  } catch (error) {
+    $('feedback').textContent = error.message + ' 可刷新页面查看进度。';
   }
 }
-let _codeFocus = false;
-
-async function startFlow() {
-  const r = await fetch('/liam-login/start', {method: 'POST',
-    body: new URLSearchParams({phone: $('phone').value})});
-  const j = await r.json();
-  if (!j.ok) { alert(j.error); return; }
-  $('phase-start').style.display = 'none';
-  $('flow-status').textContent = '启动中…（打开登录页/填号/滑块自动进行）';
-  _timer = setInterval(poll, 3000);
+async function submit(event, url, body) {
+  event.preventDefault();
+  if (busy) return;
+  busy = true;
+  clearTimeout(pollTimer);
+  showControls();
+  try {
+    const response = await fetch(url, {method:'POST', body:new URLSearchParams(body)});
+    const data = await response.json();
+    if (data.cooldown_left != null) cooldownEnd = Date.now() + data.cooldown_left * 1000;
+    if (!response.ok || !data.ok) throw new Error(data.error || data.detail || '请求未成功');
+    await poll();
+  } catch (error) {
+    $('feedback').textContent = error.message;
+  } finally {
+    busy = false;
+    showControls();
+  }
 }
-async function submitCode() {
-  const r = await fetch('/liam-login/code', {method: 'POST',
-    body: new URLSearchParams({code: $('code').value})});
-  const j = await r.json();
-  if (!j.ok) { alert(j.error); return; }
-  $('flow-status').textContent = '提交中…';
-}
-
-// 打开页面时若流程已在跑，直接进入轮询
-poll().then(() => {
-  fetch('/liam-login/status.json').then(r => r.json()).then(st => {
-    if (['running','waiting_code','submitting'].includes(st.state) && !_timer) {
-      _timer = setInterval(poll, 3000);
-    }
-  });
-});
+$('phase-start').addEventListener('submit', e => submit(e,'/liam-login/start',{phone:$('phone').value}));
+$('phase-code').addEventListener('submit', e => submit(e,'/liam-login/code',{code:$('code').value}));
+setInterval(showControls, 1000);
+showControls();
+poll();
 </script>
 {% endblock %}

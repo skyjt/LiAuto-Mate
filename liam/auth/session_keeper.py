@@ -12,7 +12,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
+
+import httpx
 
 from .li_api import AuthExpiredError, LiApi, LiApiError
 from .session_store import SessionStore
@@ -40,16 +43,28 @@ class SessionKeeper:
         self.last_error = ""
         self._task: asyncio.Task | None = None
         self._scope_lock = asyncio.Lock()
+        self.on_state_change: Callable[[], None] | None = None
 
     # ------------------------------------------------------------------
     # 状态
     # ------------------------------------------------------------------
 
     def _set_state(self, state: str, reason: str = "") -> None:
-        if state != self.state:
+        changed = state != self.state
+        if changed:
             log.info("会话状态 %s → %s（%s）", self.state, state, reason)
         self.state = state
         self.state_reason = reason
+        if changed and self.on_state_change:
+            self.on_state_change()
+
+    def report_auth_error(self, error: AuthExpiredError) -> None:
+        """实时票据过期等下一轮看护续票，账号失效则等待重新登录。"""
+        self.last_error = str(error)
+        self.scope_token = ""
+        self.scope_token_at = 0.0
+        if self.state != S_NEED_LOGIN:
+            self._set_state(S_NEED_LOGIN if error.need_relogin else S_DEGRADED, error.reason)
 
     def status(self) -> dict[str, Any]:
         return {
@@ -75,14 +90,18 @@ class SessionKeeper:
             self._set_state(S_NEED_LOGIN, "无已存凭据")
             return
         try:
-            await self.api.refresh_bearer()      # 主动续期（同时拿到轮换值）
-            self.store.persist_all(self.api)     # 轮换值立即落库
-            self._set_state(S_OK, "启动即续期成功")
+            if self.api.refresh_token:
+                await self.api.refresh_bearer()
+                self.store.persist_all(self.api)
+            else:
+                await self.get_scope_token()
+            self.last_error = ""
+            self._set_state(S_OK, "会话已就绪")
         except AuthExpiredError as e:
-            self.last_error = str(e)
-            self._set_state(S_NEED_LOGIN, f"refresh 失效: {e.reason}")
-            return
-        except LiApiError as e:
+            self.report_auth_error(e)
+            if self.state == S_NEED_LOGIN:
+                return
+        except (LiApiError, httpx.RequestError) as e:
             # 网络/临时错误：不判死，进循环重试（DEGRADED 而非 NEED_LOGIN）
             self.last_error = str(e)
             self._set_state(S_DEGRADED, f"启动续期临时失败: {e}")
@@ -99,6 +118,7 @@ class SessionKeeper:
 
     async def recover(self) -> None:
         """网页重登成功后复位：restore 新凭据 → 主动续期 → 重启看护循环。"""
+        self._set_state(S_BOOT, "正在载入新会话")
         if self._task:
             self._task.cancel()
             try:
@@ -108,15 +128,7 @@ class SessionKeeper:
             self._task = None
         self.scope_token = ""
         self.scope_token_at = 0.0
-        self.store.restore_into(self.api)
-        try:
-            await self.api.refresh_bearer()
-            self.store.persist_all(self.api)
-            self._set_state(S_OK, "网页重登成功")
-            log.info("重登成功，会话已恢复")
-        except Exception as e:  # noqa: BLE001
-            self._set_state(S_DEGRADED, f"重登后续期失败: {e}")
-        self._task = asyncio.create_task(self._loop(), name="session-keeper")
+        await self.start()
 
     # ------------------------------------------------------------------
     # scope token（实时通道钥匙，900s 寿命）
@@ -131,6 +143,7 @@ class SessionKeeper:
             self.scope_token = await self.api.exchange_scope_token()
             self.scope_token_at = time.time()
             if self.state == S_DEGRADED:
+                self.last_error = ""
                 self._set_state(S_OK, "scope token 恢复")
             return self.scope_token
 
@@ -141,32 +154,26 @@ class SessionKeeper:
     async def _loop(self) -> None:
         """周期看护：scope token 到期前现换 + bearer 反应式续期探测。"""
         last_scope_refresh = 0.0
-        while True:
+        while self.state != S_NEED_LOGIN:
             try:
                 now = time.time()
                 # ① scope token 定期现换（登录 cookie 健康时）
-                if now - last_scope_refresh >= SCOPE_REFRESH_INTERVAL:
+                if not self.scope_token or now - last_scope_refresh >= SCOPE_REFRESH_INTERVAL:
                     await self.get_scope_token()
                     last_scope_refresh = time.time()
-                # ② 周期性轻探测 bearer：历史通道保活（低频、只读）
-                #    M0 用刷新一次即可；M1 起改为「上次调用失败才刷」
-                if now - last_scope_refresh >= SCOPE_REFRESH_INTERVAL:
-                    pass  # 见 ①，同一窗口只做一次
             except AuthExpiredError as e:
-                self.last_error = str(e)
+                self.report_auth_error(e)
                 if e.need_relogin:
-                    self._set_state(S_NEED_LOGIN, e.reason)
                     log.warning("需要重新登录（%s）", e.reason)
                     # 不再循环重试 —— 等 login flow 重新 start()
                     return
-                self._set_state(S_DEGRADED, e.reason)
-            except LiApiError as e:
+            except (LiApiError, httpx.RequestError) as e:
                 self.last_error = str(e)
                 # 临时错误：不动状态（OK 也保持），下轮再看
                 log.debug("keeper 临时错误（退避）: %s", e)
             except asyncio.CancelledError:
                 raise
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 self.last_error = repr(e)
                 log.exception("keeper 未预期异常")
             await asyncio.sleep(KEEPER_TICK)

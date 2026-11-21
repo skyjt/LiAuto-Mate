@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 _SCHEMA_M0 = """
@@ -212,7 +213,7 @@ class Database:
     def __init__(self, path: Path) -> None:
         self._path = path
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._migrate()
@@ -238,7 +239,7 @@ class Database:
 
     # --- 通用小助手（M0 阶段保持薄；M1 起按表封装 repository）---
     def execute(self, sql: str, params: tuple = ()) -> None:
-        with self._lock, self._conn:
+        with self._lock:
             self._conn.execute(sql, params)
 
     def insert(self, sql: str, params: tuple = ()) -> int:
@@ -248,29 +249,34 @@ class Database:
         进程退出未提交会回滚，实测踩坑：states 有 driving 但
         drive_sessions=0）。
         """
-        with self._lock, self._conn:
+        with self._lock:
             cur = self._conn.execute(sql, params)
             return cur.lastrowid or 0
 
     def execute_ret(self, sql: str, params: tuple = ()) -> int:
         """执行并返回受影响行数（DELETE/UPDATE 统计用，自动提交）。"""
-        with self._lock, self._conn:
+        with self._lock:
             cur = self._conn.execute(sql, params)
-            self._conn.commit()
             return cur.rowcount
 
     def executemany(self, sql: str, rows: list[tuple]) -> None:
         """多行写入（单事务）：latest upsert + history insert 原子落库。"""
-        with self._lock, self._conn:
+        with self.transaction():
             self._conn.executemany(sql, rows)
 
+    @contextmanager
     def transaction(self):
-        """事务上下文：with db.transaction(): db.executemany(...)。
-
-        RLock 可重入 + 嵌套 with 均指向同一 BEGIN...COMMIT —— 单写者模型
-        下等价原子块（第二个 with 块不会重开事务）。
-        """
-        return _Txn(self)
+        """同一连接的写入一起提交。嵌套保存点可独立回滚，最外层释放时提交。"""
+        with self._lock:
+            self._conn.execute("SAVEPOINT liam_write")
+            try:
+                yield self
+                self._conn.execute("RELEASE liam_write")
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK TO liam_write")
+                    self._conn.execute("RELEASE liam_write")
+                raise
 
     def query_one(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
         with self._lock:
@@ -280,29 +286,11 @@ class Database:
         with self._lock:
             return self._conn.execute(sql, params).fetchall()
 
+    def backup_to(self, path: Path) -> None:
+        """在线导出含 WAL 已提交内容的独立快照。"""
+        with closing(sqlite3.connect(self._path)) as source, closing(sqlite3.connect(path)) as dest:
+            source.backup(dest)
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
-
-
-class _Txn:
-    """with db.transaction() 上下文（见 Database.transaction 注释）。"""
-
-    __slots__ = ("_db",)
-
-    def __init__(self, db: "Database") -> None:
-        self._db = db
-
-    def __enter__(self) -> "Database":
-        self._db._lock.acquire()
-        self._db._conn.execute("BEGIN")
-        return self._db
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        try:
-            if exc_type is None:
-                self._db._conn.commit()
-            else:
-                self._db._conn.rollback()
-        finally:
-            self._db._lock.release()

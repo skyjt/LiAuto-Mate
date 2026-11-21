@@ -62,6 +62,18 @@ async def test_charge_session_with_samples(db):
     assert n == 2
 
 
+async def test_zero_charge_peak_is_distinct_from_missing_power(db):
+    sz = Sessionizer(db, "V1")
+    for power in (None, 0):
+        sample = _merged()
+        sample["Vehicle.Powertrain.Battery.CLTCChargePower"]["value"] = power
+        await sz.on_state_change(S_PARKED_AWAKE, S_CHARGING, sample)
+        sz.add_charge_sample(sample)
+        await sz.on_state_change(S_CHARGING, S_PARKED_AWAKE, sample)
+    rows = db.query_all("SELECT power_peak_kw FROM charge_sessions ORDER BY id")
+    assert [row["power_peak_kw"] for row in rows] == [None, 0]
+
+
 async def test_geofence_naming(db):
     db.execute(
         "INSERT INTO geofences(name, lat, lon, radius_m) VALUES(?,?,?,?)",

@@ -1,31 +1,33 @@
 {% extends "base.html" %}
 {% block title %}概览 · LiAuto-Mate{% endblock %}
+{% block assets %}
+<script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.min.js","three/addons/":"/static/vendor/three/addons/"}}</script>
+{% endblock %}
+{% macro value(path, val, unit='', yes='', no='') -%}
+<b data-signal="{{ path }}" data-unit="{{ unit }}" data-yes="{{ yes }}" data-no="{{ no }}">{{ '—' if val is none else ((yes if val else no) if yes else (val|string ~ unit)) }}</b>
+{%- endmacro %}
 {% block content %}
-{% if session and session.state == 'need_login' %}
-<div class="banner">登录已过期，实时数据暂停（历史数据仍正常）。
-<a href="/liam-login"><b>→ 网页重新登录</b></a></div>
+{% if not request.app.state.vin %}
+<div class="banner">首次采集需要绑定车辆{% if session and session.state == 'need_login' %}并登录理想账号{% endif %}。 <a href="/settings#session">去绑定车辆</a></div>
+{% elif session and session.state == 'need_login' %}
+<div class="banner">账号需要登录，采集已暂停。 <a href="/liam-login">前往账号登录</a></div>
+{% elif session and session.state == 'degraded' %}
+<div class="banner">实时采集暂时受限，当前显示最近一次快照。 <a href="/settings#session">查看会话状态</a></div>
 {% endif %}
 <div class="grid" id="ov-grid">
-  <div class="card" style="grid-column: span 2;">
-    <h3>车辆状态</h3>
-    <span class="badge {{ v.state }}" id="v-state">{{ v.state }}</span>
-    {% if v.last_ingest_ms %}
-    <span class="muted" id="v-fresh">数据采集于 {{ (v.now_ms - v.last_ingest_ms)//60000 }} 分钟前</span>
-    {% endif %}
-
-    <div id="charge-banner" class="charge-banner"
-         style="display: {{ 'flex' if v.state == 'charging' else 'none' }}">
-      <span>充电中</span>
-      <b id="cb-power">{{ v.charge_power or 0 }} kW</b>
-      {% if v.charge_left_min %}<span class="muted" id="cb-left">剩余 {{ (v.charge_left_min / 60) | round(1) }} h</span>{% endif %}
+  <section class="card wide">
+    <h2>车辆状态</h2>
+    <span class="badge {{ v.state }}" id="v-state">{{ {'driving':'行驶中','charging':'充电中','parked_awake':'停车在线','asleep':'休眠'}.get(v.state,'未知') }}</span>
+    <span class="muted" id="v-fresh">{{ '暂无采集记录' if v.last_ingest_ms is none else ('最近采集 ' ~ (v.last_ingest_ms | ctime)) }}</span>
+    <div id="charge-banner" class="charge-banner" {% if v.state != 'charging' %}hidden{% endif %}>
+      <span>充电中</span>{{ value('charge_power', v.charge_power, ' kW') }}
+      <span>剩余 {{ value('charge_left_min', v.charge_left_min, ' 分钟') }}</span>
     </div>
-
     <div class="car-layout">
-      <!-- ============ 3D 车模（WebGL 失败回退顶视 SVG 线稿） ============ -->
-      <div class="car3d" id="car3d"></div>
+      <div class="car3d" id="car3d" aria-label="车辆状态模型" hidden></div>
       <svg class="car-svg" id="car-svg" viewBox="0 0 240 480" role="img"
-           aria-label="车辆状态模型" style="display:none"
-           data-locked="{{ '1' if v.doors.main_locked else '0' }}"
+           aria-label="车辆状态模型"
+           data-locked="{{ 'unknown' if v.doors.main_locked is none else ('1' if v.doors.main_locked else '0') }}"
            data-charging="{{ '1' if v.state == 'charging' else '0' }}"
            data-sentry="{{ '1' if v.sentry else '0' }}">
         <!-- 车身（未锁 → 描边警示色） -->
@@ -37,16 +39,16 @@
         <!-- 四轮（胎压悬浮） -->
         <g class="wheel" data-tire="FL">
           <rect x="26" y="84" width="18" height="54" rx="8"/>
-          <title>前左 {{ v.tires.FL or '—' }} kPa</title></g>
+          <title>前左 {{ v.tires.FL if v.tires.FL is not none else '—' }} kPa</title></g>
         <g class="wheel" data-tire="FR">
           <rect x="196" y="84" width="18" height="54" rx="8"/>
-          <title>前右 {{ v.tires.FR or '—' }} kPa</title></g>
+          <title>前右 {{ v.tires.FR if v.tires.FR is not none else '—' }} kPa</title></g>
         <g class="wheel" data-tire="RL">
           <rect x="26" y="326" width="18" height="54" rx="8"/>
-          <title>后左 {{ v.tires.RL or '—' }} kPa</title></g>
+          <title>后左 {{ v.tires.RL if v.tires.RL is not none else '—' }} kPa</title></g>
         <g class="wheel" data-tire="RR">
           <rect x="196" y="326" width="18" height="54" rx="8"/>
-          <title>后右 {{ v.tires.RR or '—' }} kPa</title></g>
+          <title>后右 {{ v.tires.RR if v.tires.RR is not none else '—' }} kPa</title></g>
         <!-- 引擎盖缝 -->
         <line class="car-seam" x1="66" y1="112" x2="174" y2="112"/>
         <!-- 前挡 -->
@@ -73,94 +75,83 @@
         <!-- 充电口（左后翼子板；充电中呼吸点亮） -->
         <rect class="charge-port" x="46" y="300" width="11" height="11" rx="2.5"/>
       </svg>
-
-      <div class="car-side">
-        <div class="soc" id="v-soc">{{ v.soc if v.soc is not none else '—' }}<small>%</small></div>
-        <div class="kv"><span class="muted">纯电续航</span><b id="v-re">{{ v.range_elec or '—' }} km</b></div>
-        <div class="kv"><span class="muted">燃油续航</span><b id="v-rf">{{ v.range_fuel or '—' }} km</b></div>
-        <div class="kv"><span class="muted">车内温度</span><b>{{ v.in_temp if v.in_temp is not none else '—' }} ℃</b></div>
-        <div class="kv"><span class="muted">车外温度</span><b>{{ v.out_temp if v.out_temp is not none else '—' }} ℃</b></div>
-        <div class="kv"><span class="muted">车辆锁定</span>
-          <b id="v-locked">{{ '已锁' if v.doors.main_locked else '未锁' }}</b></div>
-        <div class="kv"><span class="muted">哨兵</span>
-          <b id="v-sentry">{{ '开' if v.sentry else '关' }}</b></div>
-        <p class="muted car-tip">门/锁状态直接显示在车模上 · 悬停轮胎看胎压</p>
+      <div>
+        <div class="muted">电池电量</div>
+        <div class="soc">{{ value('soc', v.soc) }}<small>%</small></div>
+        <div class="kv"><span>纯电续航</span>{{ value('range_elec', v.range_elec, ' km') }}</div>
+        <div class="kv"><span>燃油续航</span>{{ value('range_fuel', v.range_fuel, ' km') }}</div>
+        <div class="kv"><span>车内温度</span>{{ value('in_temp', v.in_temp, ' ℃') }}</div>
+        <div class="kv"><span>车外温度</span>{{ value('out_temp', v.out_temp, ' ℃') }}</div>
+        <div class="kv"><span>哨兵</span>{{ value('sentry', v.sentry, yes='开', no='关') }}</div>
       </div>
     </div>
-  </div>
-  <div class="card">
-    <h3>门锁 / 位置</h3>
-    <div class="kv"><span class="muted">主驾锁</span><b>{{ '已锁' if v.doors.main_locked else '未锁' }}</b></div>
-    <div class="kv"><span class="muted">尾门</span><b>{{ '已锁' if v.doors.trunk else '未锁' }}</b></div>
-    <div class="kv"><span class="muted">车联网</span><b>{{ '在线' if v.online else '离线' }}</b></div>
-    {% if v.loc and v.loc.lat %}
-    <div class="kv"><span class="muted">坐标</span>
-      <b>{{ '%.4f' % v.loc.lat }}, {{ '%.4f' % v.loc.lon }}</b></div>
-    <div class="kv"><span class="muted">速度</span><b>{{ v.loc.spd or 0 }} km/h</b></div>
-    {% endif %}
-  </div>
-  <div class="card">
-    <h3>胎压 (kPa)</h3>
-    <div class="kv"><span class="muted">前左</span><b>{{ v.tires.FL or '—' }}</b></div>
-    <div class="kv"><span class="muted">前右</span><b>{{ v.tires.FR or '—' }}</b></div>
-    <div class="kv"><span class="muted">后左</span><b>{{ v.tires.RL or '—' }}</b></div>
-    <div class="kv"><span class="muted">后右</span><b>{{ v.tires.RR or '—' }}</b></div>
-  </div>
+  </section>
+  <section class="card">
+    <h2>门锁与位置</h2>
+    <div class="kv"><span>主驾锁</span>{{ value('doors.main_locked', v.doors.main_locked, yes='已锁', no='未锁') }}</div>
+    <div class="kv"><span>尾门锁</span>{{ value('doors.trunk', v.doors.trunk, yes='已锁', no='未锁') }}</div>
+    <div class="kv"><span>车联网</span>{{ value('online', v.online, yes='在线', no='离线') }}</div>
+    <div class="kv"><span>坐标</span><b id="v-loc">{{ (v.loc.lat|string ~ ', ' ~ v.loc.lon|string) if v.loc and v.loc.lon is not none else '—' }}</b></div>
+    <div class="kv"><span>速度</span>{{ value('loc.spd', v.loc.spd if v.loc else none, ' km/h') }}</div>
+  </section>
+  <section class="card">
+    <h2>胎压</h2>
+    {% for key, label in [('FL','前左'),('FR','前右'),('RL','后左'),('RR','后右')] %}
+    <div class="kv"><span>{{ label }}</span>{{ value('tires.' ~ key, v.tires[key], ' kPa') }}</div>
+    {% endfor %}
+  </section>
 </div>
-
 <script>
-// ===== 3D 车模（模块）=====
-import('/static/js/car3d.js').then(m => {
-  window.__updateCar3D = m.initCar3D(
-    document.getElementById('car3d'), {{ v | tojson }}).update;
-}).catch(e => {
-  console.warn('3D 车模初始化失败，回退 SVG：', e);
-  const fb = document.getElementById('car-svg');
-  if (fb) fb.style.display = '';
-  const box = document.getElementById('car3d');
-  if (box) box.style.display = 'none';
-});
-
-const D = {{ v.doors | tojson }};
-
-function updateCar(v) {
-  // 3D 车模联动（未就绪/fallback 时静默跳过）
-  if (window.__updateCar3D) { try { window.__updateCar3D(v); } catch (e) {} }
-  const svg = document.getElementById('car-svg');
-  if (!svg) return;
-  // 门：非零=开（实测静止全 0）
-  for (const [k, key] of [['main', 'door_main'], ['copilot', 'door_copilot'],
-                          ['bl', 'door_bl'], ['br', 'door_br']]) {
-    const el = svg.querySelector(`.door[data-door="${k}"]`);
-    if (el) el.dataset.open = (v.doors[key] != 0) ? '1' : '0';
+let snapshot = {{ v | tojson }};
+let car;
+const svg = document.getElementById('car-svg');
+const labels = {driving:'行驶中', charging:'充电中', parked_awake:'停车在线', asleep:'休眠'};
+function render(v) {
+  for (const el of document.querySelectorAll('[data-signal]')) {
+    const raw = el.dataset.signal.split('.').reduce((obj, key) => obj?.[key], v);
+    el.textContent = raw == null ? '—' : el.dataset.yes
+      ? (Number(raw) ? el.dataset.yes : el.dataset.no) : raw + el.dataset.unit;
   }
-  svg.dataset.locked = v.doors.main_locked ? '1' : '0';
-  svg.dataset.charging = (v.state === 'charging') ? '1' : '0';
-  svg.dataset.sentry = v.sentry ? '1' : '0';
-  const banner = document.getElementById('charge-banner');
-  if (banner) {
-    banner.style.display = (v.state === 'charging') ? 'flex' : 'none';
-    document.getElementById('cb-power').textContent = (v.charge_power ?? 0) + ' kW';
+  const state = document.getElementById('v-state');
+  state.className = 'badge ' + v.state;
+  state.textContent = labels[v.state] || '未知';
+  document.getElementById('v-fresh').textContent = v.last_ingest_ms == null
+    ? '暂无采集记录' : '最近采集于 ' + Math.max(0, Math.floor((v.now_ms-v.last_ingest_ms)/60000)) + ' 分钟前';
+  document.getElementById('v-loc').textContent = v.loc?.lat != null && v.loc?.lon != null
+    ? [v.loc.lat, v.loc.lon].map(n => Number(n).toFixed(5)).join(', ') : '—';
+  document.getElementById('charge-banner').hidden = v.state !== 'charging';
+  for (const el of svg.querySelectorAll('[data-door]')) {
+    el.dataset.open = Number(v.doors['door_' + el.dataset.door]) > 0 ? '1' : '0';
   }
-  const lk = document.getElementById('v-locked');
-  if (lk) lk.textContent = v.doors.main_locked ? '已锁' : '未锁';
-  const sn = document.getElementById('v-sentry');
-  if (sn) sn.textContent = v.sentry ? '开' : '关';
+  for (const el of svg.querySelectorAll('[data-tire]')) {
+    const key = el.dataset.tire;
+    el.querySelector('title').textContent = key + ' ' + (v.tires[key] ?? '—') + ' kPa';
+  }
+  svg.dataset.locked = v.doors.main_locked == null ? 'unknown' : Number(v.doors.main_locked) ? '1' : '0';
+  svg.dataset.charging = v.state === 'charging' ? '1' : '0';
+  svg.dataset.sentry = Number(v.sentry) ? '1' : '0';
+  car?.update(v);
 }
-
-// 初始渲染（SSR data 属性兜底后立即对齐）
-updateCar({{ v | tojson }});
-
-// 概览 30s 局部刷新 + 车模联动
-setInterval(async () => {
-  const r = await fetch('/api/v1/overview.json');
-  const v = await r.json();
-  const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
-  document.getElementById('v-state').className = 'badge ' + v.state;
-  set('v-state', v.state);
-  document.getElementById('v-soc').innerHTML = (v.soc ?? '—') + '<small>%</small>';
-  set('v-fresh', '数据采集于 ' + Math.max(0, Math.round((v.now_ms - v.last_ingest_ms)/60000)) + ' 分钟前');
-  updateCar(v);
-}, {{ refresh * 1000 }});
+render(snapshot);
+import('/static/js/car3d.js').then(module => {
+  const box = document.getElementById('car3d');
+  box.hidden = false;
+  svg.setAttribute('hidden', '');
+  car = module.initCar3D(box, snapshot);
+}).catch(() => {
+  svg.removeAttribute('hidden');
+  document.getElementById('car3d').hidden = true;
+});
+async function refresh() {
+  try {
+    snapshot = await dashboard.json('/api/v1/overview.json');
+    render(snapshot);
+  } catch {
+    document.getElementById('v-fresh').textContent = '刷新失败，当前显示上次读取的快照';
+  } finally {
+    setTimeout(refresh, {{ refresh * 1000 }});
+  }
+}
+setTimeout(refresh, {{ refresh * 1000 }});
 </script>
 {% endblock %}

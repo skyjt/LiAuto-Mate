@@ -1,65 +1,59 @@
-"""网页重登面板路由（M5/D4，方案 §5.3 三步 UX）。
+"""网页账号登录面板路由（M5/D4，方案 §5.3 三步 UX）。
 
-短信限频纪律：start 前 10 分钟冷却（实测 ~2 条/10min）。
-done 后自动 keeper.recover()（NEED_LOGIN → OK，恢复采集）。
+短信限频纪律：只有短信真正发出后才开始 10 分钟冷却（实测 ~2 条/10min）。
+滑块失败发生在发短信前，不消耗短信，也不应阻止用户立即重试。
+凭据落库后由服务恢复会话，页面可以随时关闭。
 """
 
 from __future__ import annotations
 
-import time
+import re
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from ..login.flow import S_DONE, S_FAILED, S_IDLE
+from ..login.flow import S_DONE, S_IDLE
 from .pages import templates
+from .ui_auth import require_ui_session
 
-router = APIRouter()
-
-# 进程内冷却（短信纪律）；失效可容忍（重启清零）
-_last_start_ts: list[float] = [0.0]
-START_COOLDOWN_S = 600
-
-
-async def _panel(request: Request, **ctx) -> HTMLResponse:
-    auth = request.app.state.ui_auth
-    if not auth.guard(request):
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse("/login", status_code=302)
-    return templates.TemplateResponse(request, "liam_login.html", ctx)
+router = APIRouter(dependencies=[Depends(require_ui_session)])
 
 
 @router.get("/liam-login", response_class=HTMLResponse)
 async def panel(request: Request):
-    flow = request.app.state.login_flow
     settings = request.app.state.settings
-    return await _panel(
-        request, f=flow.status(), phone=settings.phone,
-        cooldown_left=max(0, int(START_COOLDOWN_S - (time.time() - _last_start_ts[0]))))
+    flow = request.app.state.login_flow
+    return templates.TemplateResponse(request, "liam_login.html", {
+        "phone": settings.phone,
+        "cooldown_left": flow.cooldown_left(),
+        "login_error": flow.dependency_problem(),
+    })
 
 
 @router.get("/liam-login/status.json")
 async def flow_status(request: Request):
     flow = request.app.state.login_flow
-    return JSONResponse(flow.status())
+    return JSONResponse({**flow.status(), "cooldown_left": flow.cooldown_left()})
 
 
 @router.post("/liam-login/start")
 async def flow_start(request: Request):
     flow = request.app.state.login_flow
     form = await request.form()
-    phone = str(form.get("phone") or "").strip()
+    phone = re.sub(r"\s+", "", str(form.get("phone") or ""))
     if not (phone.isdigit() and len(phone) == 11):
-        return JSONResponse({"ok": False, "error": "手机号应为 11 位数字"}, status_code=400)
-    left = int(START_COOLDOWN_S - (time.time() - _last_start_ts[0]))
+        return JSONResponse({"ok": False, "error": "手机号应为 11 位数字"},
+                            status_code=400)
+    left = flow.cooldown_left()
     if left > 0:
         return JSONResponse(
-            {"ok": False,
-             "error": f"短信限频冷却中，{left // 60} 分钟后再试"}, status_code=429)
+            {"ok": False, "cooldown_left": left,
+             "error": f"短信发送冷却中，请在 {left} 秒后再次发起登录。"},
+            status_code=429)
     ok, msg = flow.start(phone)
-    if ok:
-        _last_start_ts[0] = time.time()
-    return JSONResponse({"ok": ok, "error": None if ok else msg}, status_code=200)
+    return JSONResponse(
+        {"ok": ok, "error": None if ok else msg, "cooldown_left": flow.cooldown_left()},
+        status_code=200 if ok else 400)
 
 
 @router.post("/liam-login/code")
@@ -73,16 +67,11 @@ async def flow_code(request: Request):
 
 @router.get("/liam-login/finish.json")
 async def flow_finish(request: Request):
-    """面板轮询的收尾检查：DONE → keeper.recover 并返回成功。"""
+    """确认后台已完成恢复，清除面板的完成状态。"""
     flow = request.app.state.login_flow
     st = flow.status()
     if st["state"] == S_DONE:
-        keeper = request.app.state.keeper_ref.get("keeper")
-        if keeper:
-            await keeper.recover()
-            flow._set(S_IDLE)      # 面板清零，允许下次再登
-        return JSONResponse({"ok": True, "state": "done"})
-    if st["state"] == S_FAILED:
-        # 失败后冷却减半（滑块失败无短信消耗）
-        _last_start_ts[0] = min(_last_start_ts[0], time.time() - START_COOLDOWN_S / 2)
+        flow._set(S_IDLE)
+        return JSONResponse({"ok": True, "state": S_DONE,
+                             "next": "/" if request.app.state.vin else "/settings#session"})
     return JSONResponse({"ok": False, "state": st["state"]})

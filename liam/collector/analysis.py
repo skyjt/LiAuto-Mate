@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any
 
@@ -37,6 +38,34 @@ def _ps(v_json: str | None) -> Any:
                 return inner
         return inner
     return v
+
+
+def switch_value(value: Any) -> int | float | None:
+    """开关信号兼容数字、布尔值和嵌套 value，缺失或无法解析时返回 None。"""
+    if isinstance(value, dict):
+        value = value.get("value")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value.lower())
+        except ValueError:
+            return None
+    return value if isinstance(value, (int, float)) and math.isfinite(value) else None
+
+
+def soc_buckets(db: Database, vin: str, days: int, width: int) -> list[int]:
+    since = int(time.time() * 1000) - days * 86400 * 1000
+    rows = db.query_all(
+        "SELECT value_json FROM state_history WHERE vin=? AND path=? AND ingested_at_ms>?",
+        (vin, P_SOC, since))
+    buckets = [0] * (100 // width)
+    for row in rows:
+        try:
+            value = float(_ps(row["value_json"]))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= value <= 100:
+            buckets[min(int(value // width), len(buckets) - 1)] += 1
+    return buckets
 
 
 def vampire_drain(db: Database, vin: str, days: int = 30,

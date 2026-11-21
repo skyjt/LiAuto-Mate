@@ -1,82 +1,51 @@
 {% extends "base.html" %}
 {% block title %}电池 · LiAuto-Mate{% endblock %}
+{% block assets %}<script src="/static/vendor/echarts.min.js"></script>{% endblock %}
 {% block content %}
 <div class="grid">
-  <div class="card">
-    <h3>月度里程（云端 travel 口径）</h3>
-    <div id="bar" class="chart"></div>
-  </div>
-  <div class="card">
-    <h3>充电深度分布（近 90 天 SOC 采样）</h3>
-    <div id="hist" class="chart"></div>
-  </div>
+  <section class="card"><h2>月度里程</h2><div id="bar" class="chart"></div></section>
+  <section class="card"><h2>电量采样分布 · 近 90 天</h2><div id="hist" class="chart"></div></section>
 </div>
-<div class="card" style="margin-top:14px">
-  <h3>SOC 历史（近 7 天）</h3>
-  <div id="soc" class="chart"></div>
-</div>
+<section class="card stack"><h2>电量变化 · 近 7 天</h2><p id="soc-note" class="muted" hidden></p><div id="soc" class="chart"></div></section>
+<section class="card stack"><h2>静置电耗 · 近 30 天</h2><div id="vamp"></div></section>
 <script>
-(async () => {
-  echarts.init(document.getElementById('bar')).setOption({
-    xAxis: { type: 'category',
-             data: [{% for m in months %}'{{ m.date }}',{% endfor %}] },
-    yAxis: { type: 'value', name: 'km' },
-    series: [{ type: 'bar', itemStyle: {color: '#4f9cf9'},
-               data: [{% for m in months %}{{ m.mileage_km or 0 }},{% endfor %}] }],
-    tooltip: { trigger: 'axis' }, darkMode: true,
-  });
+const months = {{ months | map(attribute='date') | list | tojson }};
+const mileage = {{ months | map(attribute='mileage_km') | list | tojson }};
+const bar = document.getElementById('bar');
+if (mileage.some(m => m != null)) {
+  dashboard.chart(bar, {xAxis:{type:'category',data:months},yAxis:{type:'value',name:'km'},
+    series:[{type:'bar',name:'里程',data:mileage}]});
+} else dashboard.message(bar, '暂无云端月度里程。');
 
-  const h = await (await fetch('/api/v1/soc-histogram.json')).json();
-  echarts.init(document.getElementById('hist')).setOption({
-    xAxis: { type: 'category',
-             data: ['0-10','10-20','20-30','30-40','40-50','50-60','60-70','70-80','80-90','90-100'] },
-    yAxis: { type: 'value', name: '样本数' },
-    series: [{ type: 'bar', itemStyle: {color: '#f5b942'},
-               data: h.buckets }],
-    tooltip: { trigger: 'axis' }, darkMode: true,
-    title: { subtext: '共 ' + h.samples + ' 个样本', textStyle: {color: '#8a93a6', fontSize: 12} },
+dashboard.load(document.getElementById('hist'), '/api/v1/soc-histogram.json', (data, el) => {
+  if (!data.samples) return dashboard.message(el, '近 90 天没有有效电量采样。');
+  dashboard.chart(el, {
+    xAxis:{type:'category',name:'%',data:data.buckets.map((_,i)=>i*10+'–'+(i+1)*10)},
+    yAxis:{type:'value',name:'样本数',minInterval:1},series:[{type:'bar',name:'采样数',data:data.buckets}]
   });
-
-  const soc = echarts.init(document.getElementById('soc'));
-  const d = await (await fetch(
-    '/api/v1/signal/Vehicle.Powertrain.Battery.ResidueBattery.json?hours=168')).json();
-  soc.setOption({
-    xAxis: { type: 'time' },
-    yAxis: { type: 'value', min: 0, max: 100, name: 'SOC %' },
-    series: [{ type: 'line', showSymbol: false, step: 'end',
-               data: d.points.map(p => [p.t, p.v]) }],
-    tooltip: { trigger: 'axis' }, darkMode: true,
-  });
-})();
-</script>
-<div class="card" style="margin-top:14px">
-  <h3>幽灵功耗（静置电耗 · 近 30 天停车段）</h3>
-  <div id="vamp"></div>
-</div>
-<script>
-(async () => {
-  const rows = await (await fetch('/api/v1/vampire-drain.json?days=30')).json();
-  const el = document.getElementById('vamp');
-  if (!rows.length) {
-    el.innerHTML = '<p class="muted">暂无有效停车段数据——积累几天后自动出现。</p>';
-    return;
+});
+dashboard.load(document.getElementById('soc'), '/api/v1/signal/Vehicle.Powertrain.Battery.ResidueBattery.json?hours=168', (data, el) => {
+  if (data.truncated) {
+    const note = document.getElementById('soc-note');
+    note.textContent = '当前显示最近 ' + data.points.length + ' 条变化记录。';
+    note.hidden = false;
   }
-  let html = '<table><tr><th>停车开始</th><th>时长</th><th>SOC 掉幅</th><th>损失电量</th><th>平均功耗</th></tr>';
-  for (const r of rows.slice(0, 15)) {
-    const t = new Date(r.start_ms);
-    const hh = String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
-    const d = String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
-    html += `<tr><td>${d} ${hh}</td><td>${r.hours}h</td><td>-${r.soc_drop_pct}%</td>`
-        + `<td>${r.kwh_lost} kWh</td><td>${(r.avg_kw * 1000).toFixed(0)} W</td></tr>`;
+  const points = data.points.filter(p => p.v != null && String(p.v).trim() && Number.isFinite(Number(p.v)) && Number(p.v)>=0 && Number(p.v)<=100);
+  if (!points.length) return dashboard.message(el, '近 7 天没有有效电量记录。');
+  dashboard.chart(el, {xAxis:{type:'time'},yAxis:{type:'value',name:'%',min:0,max:100},
+    series:[{name:'电量',type:'line',step:'end',data:points.map(p=>[p.t,Number(p.v)])}]});
+});
+dashboard.load(document.getElementById('vamp'), '/api/v1/vampire-drain.json?days=30', (rows, el) => {
+  if (!rows.length) return dashboard.message(el, '暂无可估算电耗的停车时段。');
+  dashboard.table(el,['停车开始','时长 (h)','电量下降','估算电耗 (kWh)','平均功耗 (W)'],
+    rows.map(r=>[new Date(r.start_ms).toLocaleString('zh-CN'),r.hours,r.soc_drop_pct+'%',r.kwh_lost,Math.round(r.avg_kw*1000)]));
+  const long = rows.filter(r=>r.hours>=3);
+  if (long.length) {
+    const note = document.createElement('p');
+    const watts = long.reduce((n,r)=>n+r.kwh_lost,0)*1000 / long.reduce((n,r)=>n+r.hours,0);
+    note.textContent = '停车至少 3 小时的时段平均功耗约 ' + Math.round(watts) + ' W（按时长加权）';
+    el.append(note);
   }
-  html += '</table>';
-  const valid = rows.filter(r => r.hours >= 3);
-  if (valid.length) {
-    const avg = valid.reduce((s, r) => s + r.avg_kw, 0) / valid.length;
-    html += `<p class="muted" style="margin-top:8px">≥3h 停车段平均功耗 ≈ `
-        + `${(avg * 1000).toFixed(0)} W</p>`;
-  }
-  el.innerHTML = html;
-})();
+});
 </script>
 {% endblock %}

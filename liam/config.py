@@ -8,7 +8,6 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +24,7 @@ class Settings(BaseSettings):
 
     # --- 账号（仅掩码展示/预填，不参与签名）---
     phone: str = ""
+    login_headless: bool = True      # 网页登录的内置浏览器是否无头；排查时可设 0
 
     # --- 采集节奏（秒）---
     poll_realtime: int = 60          # T1 全量批（awake）

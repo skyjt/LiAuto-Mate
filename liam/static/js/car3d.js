@@ -25,7 +25,9 @@ export function initCar3D(container, state) {
   const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 60);
   const view = new URLSearchParams(location.search).get('view');
   camera.position.set(5.0, 1.6, 4.3);
-  if (view === 'side') { camera.position.set(0.3, 1.15, 7.4); controls.autoRotate = false; }
+  if (view === 'side') camera.position.set(0.3, 1.15, 7.4);
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const allowRotation = view !== 'side' && !reduced;
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.target.set(0, 0.9, 0);
@@ -35,7 +37,7 @@ export function initCar3D(container, state) {
   controls.maxPolarAngle = 1.42;
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.autoRotate = true;
+  controls.autoRotate = allowRotation;
   controls.autoRotateSpeed = 0.7;
   let idleTimer = null;
   controls.addEventListener('start', () => {
@@ -44,7 +46,7 @@ export function initCar3D(container, state) {
   });
   controls.addEventListener('end', () => {
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => { controls.autoRotate = true; }, 8000);
+    idleTimer = setTimeout(() => { controls.autoRotate = allowRotation; }, 8000);
   });
 
   // ---- 灯光 ----
@@ -220,13 +222,13 @@ export function initCar3D(container, state) {
 
   function update(v) {
     const d = (v.doors || {});
-    doors.main.target = d.door_main != 0 ? 0.95 : 0;
-    doors.copilot.target = d.door_copilot != 0 ? -0.95 : 0;
-    doors.bl.target = d.door_bl != 0 ? 0.95 : 0;
-    doors.br.target = d.door_br != 0 ? -0.95 : 0;
+    doors.main.target = Number(d.door_main) > 0 ? 0.95 : 0;
+    doors.copilot.target = Number(d.door_copilot) > 0 ? -0.95 : 0;
+    doors.bl.target = Number(d.door_bl) > 0 ? 0.95 : 0;
+    doors.br.target = Number(d.door_br) > 0 ? -0.95 : 0;
     st.charging = v.state === 'charging';
-    st.unlocked = !(d.main_locked);
-    st.sentry = !!v.sentry;
+    st.unlocked = d.main_locked != null && Number(d.main_locked) === 0;
+    st.sentry = Boolean(Number(v.sentry));
     const spd = (v.loc && v.loc.spd) || 0;
     st.spin = v.state === 'driving' ? Math.max(spd, 5) / 30 : 0;
   }
@@ -235,17 +237,17 @@ export function initCar3D(container, state) {
   // ---- 渲染循环 ----
   const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
-    const t = clock.getElapsedTime();
+    const t = reduced ? 0 : clock.getElapsedTime();
     for (const k in doors) {
       const d = doors[k];
-      d.cur += (d.target - d.cur) * 0.08;
+      d.cur = reduced ? d.target : d.cur + (d.target - d.cur) * 0.08;
       d.g.rotation.y = d.cur * d.side;
     }
     portMat.emissiveIntensity = st.charging ? (1.1 + Math.sin(t * 2.6) * 0.9) : 0;
     sentryMat.emissiveIntensity = st.sentry ? 1.8 : 0;
     ringMat.opacity = st.unlocked ? 0.18 + 0.14 * Math.sin(t * 2.2) : 0;
     for (const w of wheels) w.children.forEach(
-      m => m.rotation.y += st.spin * 0.25);
+      m => m.rotation.y += reduced ? 0 : st.spin * 0.25);
     controls.update();
     renderer.render(scene, camera);
   });

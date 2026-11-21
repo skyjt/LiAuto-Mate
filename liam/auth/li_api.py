@@ -24,6 +24,7 @@ from .constants import (
     API_APP,
     API_ID,
     AUD_VSS,
+    EP_AUTH,
     EP_CHARGE_RECORDS,
     EP_MAINT_PLAN,
     EP_OTA_UPGRADE,
@@ -33,7 +34,6 @@ from .constants import (
     EP_TRAVEL_DAILY,
     EP_TRAVEL_MONTHLY,
     EP_TRAVEL_MONTHS,
-    EP_AUTH,
     EP_VSS_GET_BATCH,
     LIVIS_CLIENT_ID,
     SCOPE_VSS,
@@ -113,15 +113,22 @@ class LiApi:
             },
             headers={"User-Agent": UA_OKHTTP},
         )
+        if resp.status_code in (408, 429) or resp.status_code >= 500:
+            raise LiApiError(f"refresh 暂时不可用 HTTP {resp.status_code}")
         if resp.status_code != 200:
             raise AuthExpiredError(
-                f"refresh 失败 HTTP {resp.status_code}: {resp.text[:120]}",
+                f"refresh 失败 HTTP {resp.status_code}",
                 need_relogin=True,
             )
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise LiApiError("refresh 返回无效 JSON") from exc
+        if not isinstance(data, dict):
+            raise LiApiError("refresh 返回格式异常")
         if not data.get("access_token"):
             raise AuthExpiredError(
-                f"refresh 响应无 token: {json.dumps(data)[:120]}",
+                "refresh 响应缺少 access_token",
                 need_relogin=True,
             )
         self.bearer = data["access_token"]

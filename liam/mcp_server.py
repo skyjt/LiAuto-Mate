@@ -1,4 +1,4 @@
-"""MCP 服务器（M4，方案 §8.3）：/mcp 只读 12 工具，Agent 获取车辆信息。
+"""MCP 服务器（M4，方案 §8.3）：/mcp 只读工具，Agent 获取车辆信息。
 
   · streamable HTTP 挂同一 FastAPI（单容器单端口不变）
   · LIAM_MCP_TOKEN Bearer 必需（未设=整体关闭，由 app 装配判断）
@@ -8,17 +8,16 @@
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Any
+
+from mcp.server.fastmcp import FastMCP
 
 from .config import Settings
 from .core.db import Database
 
-from mcp.server.fastmcp import FastMCP
 
-
-def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
+def mount_mcp(app, db: Database, keeper_ref: dict,
               settings: Settings) -> None:
     """构建 MCP Starlette 子应用并挂载到 FastAPI /mcp。"""
     mcp = FastMCP(
@@ -33,14 +32,12 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
     # ------------------------------------------------------------------
     # 共享分析器（liam.collector.analysis，MCP 与 Web API 复用）
     # ------------------------------------------------------------------
-    from .collector.analysis import _ps, visited_places, vampire_drain
-
-    @mcp.tool()
+    from .collector.analysis import _ps, soc_buckets, switch_value, vampire_drain, visited_places
 
     def _latest(path: str) -> Any:
         r = db.query_one(
             "SELECT value_json, ts_ms, ingested_at_ms FROM state_latest "
-            "WHERE vin=? AND path=?", (vin, path))
+            "WHERE vin=? AND path=?", (app.state.vin, path))
         return r
 
     def _num_of(path: str) -> tuple[Any, int | None, bool]:
@@ -54,22 +51,22 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
     @mcp.tool()
     def get_vehicle_status() -> dict:
         """实时快照：状态徽章/SOC/续航/位置+速度/门锁/胎压/温度/充电功率。"""
-        online, _, _ = _num_of("Vehicle.ConnectManager.ConnectStatus.5G")
+        online = switch_value(_num_of("Vehicle.ConnectManager.ConnectStatus.5G")[0])
+        locked = switch_value(_num_of("Vehicle.Body.DoorLockStatus.MainDoor")[0])
         soc, soc_ts, soc_stale = _num_of(
             "Vehicle.Powertrain.Battery.ResidueBattery")
-        loc, loc_ts, _ = _num_of("Vehicle.Location.CurrentLocationInfo")
+        loc, _, _ = _num_of("Vehicle.Location.CurrentLocationInfo")
         st = db.query_one(
             "SELECT state, start_ms FROM states WHERE vin=? AND end_ms IS NULL",
-            (vin,))
+            (app.state.vin,))
         power, _, _ = _num_of("Vehicle.Powertrain.Battery.CLTCChargePower")
         out = {
             "state": st["state"] if st else "unknown",
-            "online": bool(online),
+            "online": None if online is None else bool(online),
             "soc_percent": soc, "soc_ts": soc_ts, "soc_stale": soc_stale,
             "location": loc if isinstance(loc, dict) else None,
             "charge_power_kw": power,
-            "doors_locked": _num_of(
-                "Vehicle.Body.DoorLockStatus.MainDoor")[0] not in (0, None, False),
+            "doors_locked": None if locked is None else bool(locked),
         }
         for k, p in (("range_elec_km", "Vehicle.Cabin.CLTC.PureElecEnduranceMileInd"),
                      ("range_fuel_km", "Vehicle.Cabin.CLTC.FuelEnduranceMileInd"),
@@ -94,7 +91,7 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
         """
         rows = db.query_all(
             "SELECT path, value_json, ts_ms, ingested_at_ms FROM state_latest "
-            "WHERE vin=? AND path LIKE ?", (vin, prefix + "%"))
+            "WHERE vin=? AND path LIKE ?", (app.state.vin, prefix + "%"))
         out = {}
         for r in rows:
             stale = (time.time() * 1000 - (r["ingested_at_ms"] or 0)) > 20 * 60 * 1000
@@ -109,16 +106,16 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
         rows = db.query_all(
             "SELECT ts_ms, ingested_at_ms, value_json FROM state_history "
             "WHERE vin=? AND path=? AND ingested_at_ms>? "
-            "ORDER BY ingested_at_ms LIMIT ?", (vin, path, since, limit))
+            "ORDER BY ingested_at_ms DESC, id DESC LIMIT ?", (app.state.vin, path, since, limit))
         return {"path": path, "points": [
-            {"t": r["ingested_at_ms"], "v": _ps(r["value_json"])} for r in rows]}
+            {"t": r["ingested_at_ms"], "v": _ps(r["value_json"])} for r in reversed(rows)]}
 
     @mcp.tool()
     def get_drive_sessions(limit: int = 20) -> list:
         """行车会话列表（本地推导：起止/里程/时长/均速/起终点命名）。"""
         rows = db.query_all(
             "SELECT * FROM drive_sessions WHERE vin=? ORDER BY start_ms DESC "
-            "LIMIT ?", (vin, limit))
+            "LIMIT ?", (app.state.vin, limit))
         return [dict(r) for r in rows]
 
     @mcp.tool()
@@ -126,7 +123,7 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
         """单次行车轨迹点序列（WGS-84，lat/lon/spd/dir/alt）。"""
         rows = db.query_all(
             "SELECT ts_ms, lat, lon, spd, dir, alt FROM positions "
-            "WHERE drive_session_id=? ORDER BY ts_ms", (session_id,))
+            "WHERE vin=? AND drive_session_id=? ORDER BY ts_ms", (app.state.vin, session_id))
         return [dict(r) for r in rows]
 
     @mcp.tool()
@@ -134,7 +131,7 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
         """充电会话列表（本地推导：起止 SOC/峰值功率/地点）。"""
         rows = db.query_all(
             "SELECT * FROM charge_sessions WHERE vin=? ORDER BY start_ms DESC "
-            "LIMIT ?", (vin, limit))
+            "LIMIT ?", (app.state.vin, limit))
         return [dict(r) for r in rows]
 
     @mcp.tool()
@@ -143,7 +140,7 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
         rows = db.query_all(
             "SELECT record_id, start_ms, end_ms, energy_kwh, charging_type "
             "FROM charge_records_cloud WHERE vin=? ORDER BY start_ms DESC "
-            "LIMIT ?", (vin, limit))
+            "LIMIT ?", (app.state.vin, limit))
         return [dict(r) for r in rows]
 
     @mcp.tool()
@@ -151,7 +148,7 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
         """月度里程（云端口径，travel_daily 月度键 YYYY-MM）。"""
         rows = db.query_all(
             "SELECT date, mileage_km, energy_kwh FROM travel_daily "
-            "WHERE vin=? AND date LIKE '20%' ORDER BY date", (vin,))
+            "WHERE vin=? AND date LIKE '20%' ORDER BY date", (app.state.vin,))
         return [dict(r) for r in rows]
 
     @mcp.tool()
@@ -168,31 +165,18 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
         rows = db.query_all(
             "SELECT state, start_ms, end_ms FROM states WHERE vin=? "
             "AND (end_ms IS NULL OR end_ms>?) ORDER BY start_ms",
-            (vin, since))
+            (app.state.vin, since))
         return [dict(r) for r in rows]
 
     @mcp.tool()
     def get_battery_health() -> dict:
         """宏观电池健康：SOC 分布（近 30 天充电深度）+ 月度充电统计。"""
-        since = int(time.time() * 1000) - 30 * 24 * 3600 * 1000
-        rows = db.query_all(
-            "SELECT value_json FROM state_history WHERE vin=? AND path=? "
-            "AND ingested_at_ms>? ORDER BY ingested_at_ms",
-            (vin, "Vehicle.Powertrain.Battery.ResidueBattery", since))
-        socs = []
-        for r in rows:
-            try:
-                socs.append(float(_ps(r["value_json"])))
-            except (TypeError, ValueError):
-                pass
-        buckets = {"0-20": 0, "20-40": 0, "40-60": 0, "60-80": 0, "80-100": 0}
-        for s in socs:
-            k = f"{min(int(s // 20) * 20, 80)}-{min(int(s // 20) * 20 + 20, 100)}"
-            buckets[k] = buckets.get(k, 0) + 1
+        counts = soc_buckets(db, app.state.vin, days=30, width=20)
+        buckets = dict(zip(("0-20", "20-40", "40-60", "60-80", "80-100"), counts, strict=True))
         months = db.query_all(
             "SELECT date, mileage_km FROM travel_daily WHERE vin=? "
-            "AND date LIKE '20%' ORDER BY date DESC LIMIT 12", (vin,))
-        return {"soc_samples_30d": len(socs), "soc_distribution": buckets,
+            "AND date LIKE '20%' ORDER BY date DESC LIMIT 12", (app.state.vin,))
+        return {"soc_samples_30d": sum(counts), "soc_distribution": buckets,
                 "monthly_mileage_km": [dict(r) for r in months]}
 
     @mcp.tool()
@@ -208,7 +192,7 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
             for pfx in prefixes:
                 rows = db.query_all(
                     "SELECT path, value_json, ts_ms FROM state_latest "
-                    "WHERE vin=? AND path LIKE ?", (vin, pfx + "%"))
+                    "WHERE vin=? AND path LIKE ?", (app.state.vin, pfx + "%"))
                 for r in rows:
                     out[r["path"]] = {
                         "value": _ps(r["value_json"]), "ts": r["ts_ms"]}
@@ -225,12 +209,12 @@ def mount_mcp(app, db: Database, vin: str, keeper_ref: dict,
 
         长时间停车（含休眠）数据可能因 VSS 停更而不完整——如实呈现。
         """
-        return vampire_drain(db, vin, days, settings.battery_kwh)
+        return vampire_drain(db, app.state.vin, days, settings.battery_kwh)
 
     @mcp.tool()
     def get_visited_places(days: int = 30) -> list:
         """常去地点（自动统计停车高频点，200m 聚类）。"""
-        return visited_places(db, vin, days)
+        return visited_places(db, app.state.vin, days)
 
     @mcp.tool()
     def get_system_health() -> dict:

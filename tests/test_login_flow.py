@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from liam.auth.session_store import SessionStore
 from liam.core.db import Database
 from liam.core.secrets import SecretBox
 from liam.login.flow import (
-    S_DONE,
     S_FAILED,
     S_IDLE,
     S_RUNNING,
@@ -30,6 +27,39 @@ def test_status_initial(flow):
     st = flow.status()
     assert st["state"] == S_IDLE
     assert st["screenshot"] == ""
+    assert st["sms_sent"] is False
+    assert st["cooldown_left"] == 0
+    assert st["captcha_attempts"] == 0
+
+
+def test_cooldown_only_after_sms(flow):
+    assert flow.cooldown_left() == 0
+    flow._mark_sms_sent()
+    assert flow.status()["sms_sent"] is True
+    assert 590 <= flow.cooldown_left() <= 600
+
+
+def test_start_rejects_invalid_phone(flow):
+    ok, msg = flow.start("123")
+    assert ok is False
+    assert "11 位" in msg
+    assert flow.status()["state"] == S_IDLE
+
+
+def test_start_rejects_during_sms_cooldown(flow):
+    flow._mark_sms_sent()
+    ok, msg = flow.start("13800138000")
+    assert ok is False
+    assert "冷却" in msg
+    assert flow.status()["state"] == S_IDLE
+
+
+def test_missing_login_dependency_is_actionable(flow, monkeypatch):
+    monkeypatch.setattr("liam.login.flow.importlib.util.find_spec", lambda name: None)
+    ok, msg = flow.start("13800138000")
+    assert ok is False
+    assert "playwright install chromium" in msg
+    assert flow.status()["state"] == S_IDLE
 
 
 def test_submit_code_rejected_when_idle(flow):
@@ -41,9 +71,9 @@ def test_submit_code_rejected_when_idle(flow):
 def test_submit_code_format_check(flow):
     # 伪造 waiting_code 态验码格式
     flow._set(S_WAITING_CODE)
-    ok, msg = flow.submit_code("abc")
+    ok, _msg = flow.submit_code("abc")
     assert ok is False
-    ok, msg = flow.submit_code("12345")
+    ok, _msg = flow.submit_code("12345")
     assert ok is True
 
 
@@ -59,6 +89,7 @@ def test_state_transitions_recorded(flow):
 
 def test_find_hole_synthetic():
     import numpy as np
+
     from liam.login.flow import find_hole
     bg = np.full((100, 300), 200.0)
     bg[40:80, 150:190] = 30.0
