@@ -21,9 +21,11 @@
     </div>
 
     <div class="car-layout">
-      <!-- ============ 顶视车模（L 系线稿 · 状态着色） ============ -->
-      <svg class="car-svg" viewBox="0 0 240 480" role="img" aria-label="车辆状态模型"
-           id="car-svg" data-locked="{{ '1' if v.doors.main_locked else '0' }}"
+      <!-- ============ 3D 车模（WebGL 失败回退顶视 SVG 线稿） ============ -->
+      <div class="car3d" id="car3d"></div>
+      <svg class="car-svg" id="car-svg" viewBox="0 0 240 480" role="img"
+           aria-label="车辆状态模型" style="display:none"
+           data-locked="{{ '1' if v.doors.main_locked else '0' }}"
            data-charging="{{ '1' if v.state == 'charging' else '0' }}"
            data-sentry="{{ '1' if v.sentry else '0' }}">
         <!-- 车身（未锁 → 描边警示色） -->
@@ -107,9 +109,23 @@
 </div>
 
 <script>
+// ===== 3D 车模（模块）=====
+import('/static/js/car3d.js').then(m => {
+  window.__updateCar3D = m.initCar3D(
+    document.getElementById('car3d'), {{ v | tojson }}).update;
+}).catch(e => {
+  console.warn('3D 车模初始化失败，回退 SVG：', e);
+  const fb = document.getElementById('car-svg');
+  if (fb) fb.style.display = '';
+  const box = document.getElementById('car3d');
+  if (box) box.style.display = 'none';
+});
+
 const D = {{ v.doors | tojson }};
 
 function updateCar(v) {
+  // 3D 车模联动（未就绪/fallback 时静默跳过）
+  if (window.__updateCar3D) { try { window.__updateCar3D(v); } catch (e) {} }
   const svg = document.getElementById('car-svg');
   if (!svg) return;
   // 门：非零=开（实测静止全 0）

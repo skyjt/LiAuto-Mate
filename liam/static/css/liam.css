@@ -46,13 +46,16 @@ button:hover { border-color: var(--accent); }
           padding: 8px 14px; border-radius: 8px; margin-bottom: 14px; }
 .banner a { color: var(--warn); }
 
-/* ===== 顶视车模（概览车辆状态卡） ===== */
-.car-layout { display: grid; grid-template-columns: 190px 1fr;
+/* ===== 3D 车模（概览车辆状态卡） ===== */
+.car-layout { display: grid; grid-template-columns: 320px 1fr;
               gap: 22px; align-items: center; margin-top: 10px; }
 @media (max-width: 640px) {
   .car-layout { grid-template-columns: 1fr; }
-  .car-svg { max-width: 190px; margin: 0 auto; }
+  .car3d { max-width: 320px; margin: 0 auto; }
 }
+.car3d { height: 340px; }
+.car3d canvas { display: block; cursor: grab; }
+.car3d canvas:active { cursor: grabbing; }
 .car-svg { width: 100%; color: var(--muted); }
 .car-body { fill: var(--panel); stroke: var(--fg); stroke-width: 2;
             filter: drop-shadow(0 4px 18px rgba(0,0,0,.5)); }
