@@ -2,8 +2,8 @@
 
 自托管理想汽车数据记录器（TeslaMate 形态）——走「理想同学」（livis）通道，独立会话，**不与手机「理想汽车」App 冲突**；四态感知轮询（绝不唤醒车辆）、SQLite 单文件存储、自建 Web 看板、MCP `/mcp` 供 Agent 只读查车、单容器 Docker 部署。
 
-> 设计文档：`../lixiangtongxue/docs/design/06-liauto-mate-可行性与设计方案.md`（v1.6）
-> 协议与证据仓库：`../lixiangtongxue`（spike 实测、逆向报告、参考实现）
+> 设计文档：`docs/可行性与设计方案.md`（v1.6）
+> 协议验证 spike：`spike/`（纯 Python HTTP 全链路，2026-11-19 实测，已脱敏）
 
 ## 当前状态：M0–M5 全部完成并真实验证（2026-11-20）
 
@@ -55,6 +55,12 @@ cp .env.example .env            # 填 LIAM_UI_PASSWORD 等
 .venv/bin/python -m pytest tests/ -q                                            # 单测（fixture 回放，永不打真实 API）
 .venv/bin/python -m liam.cli smoke-m0 --vin <VIN>                              # 真实链路验收（手动）
 ```
+
+## Spike（协议验证，2026-11-19 全链路实测）
+
+`spike/` 是可行性定稿时的协议验证脚本（纯 Python HTTP，无 App/无模拟器）：`browser_login.py`（Playwright 浏览器滑块登录）→ `login_sms.py`（纯 requests 短信登录，被滑块拦截时用前者）→ `spike_vss.py` / `finish_vss.py`（keySuite 派生 + 签名调 `vss/get-batch`）。key_suite 直接复用 `liam/auth/key_suite.py`。
+
+个人值一律环境变量传入（`LX_PHONE` / `LX_VIN` / `LX_REFRESH_TOKEN`）；运行产物（`session.json`、截图、`login_state.*`）已封死在 .gitignore，`session.json` 经 `liam.cli import-session` 导入产品。依赖：`pip install -e '.[login]'`，浏览器路线另需 `python -m playwright install chromium`。
 
 ## 红线（§13.1，第一天立）
 
